@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-from megapi import *
+from megapi import MegaPi
 
 
 def main():

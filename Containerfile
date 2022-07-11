@@ -4,6 +4,7 @@ COPY . /opt/mappie
 WORKDIR /opt/mappie
 RUN apt-get -y update \
     && apt-get -y install python3-pip \
-    && pip3 install -r requirements.txt
+    && pip3 install . \
+    && rm -rf /opt/mappie
 
-ENTRYPOINT ["python3", "/opt/mappie/src/mappie/main.py"]
+ENTRYPOINT ["python3", "-m", "mappie"]
