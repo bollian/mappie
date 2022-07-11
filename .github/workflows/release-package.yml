@@ -14,12 +14,18 @@ jobs:
     - name: Checkout Code
       uses: actions/checkout@v2
 
+    - name: Install qemu dependency
+      run: |
+        sudo apt-get -y update
+        sudo apt-get -y install qemu-user-static
+
     - name: Build Podman Image
       id: build-image
       uses: redhat-actions/buildah-build@v2
       with:
         image: bollian/mappie
         tags: githash_${{github.sha}}
+        archs: arm64
         containerfiles: |
           ./Containerfile
 
