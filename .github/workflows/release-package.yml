@@ -19,12 +19,21 @@ jobs:
         sudo apt-get -y update
         sudo apt-get -y install qemu-user-static
 
+    - name: Tag :latest on main Branch
+      id: tag-latest
+      run: |
+        if [ ${{github.ref_name}} == main ]; then
+          echo '::set-output name=tags::'latest
+        else
+          echo '::set-output name=tags::'
+        fi
+
     - name: Build Podman Image
       id: build-image
       uses: redhat-actions/buildah-build@v2
       with:
-        image: bollian/mappie
-        tags: githash_${{github.sha}}
+        image: ${{github.repository}}
+        tags: githash_${{github.sha}} ${{github.ref_name}} ${{steps.tag-latest.outputs.tags}}
         archs: arm64
         containerfiles: |
           ./Containerfile
