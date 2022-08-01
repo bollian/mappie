@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
 
-from megapi import MegaPi
-
-
-def main():
-    print("Hello, World!")
-    bot = MegaPi()
-    bot.start()
+import mappie
 
 
 if __name__ == '__main__':
-    main()
+    mappie.main()
