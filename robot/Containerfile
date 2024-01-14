@@ -1,0 +1,6 @@
+FROM ghcr.io/bollian/mappie_base:latest
+
+COPY src /opt/mappie/src
+RUN pip3 install /opt/mappie && rm -rf /opt/mappie
+
+ENTRYPOINT ["python3", "-m", "mappie"]
