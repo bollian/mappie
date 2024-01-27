@@ -1,3 +1,0 @@
-adafruit-circuitpython-motorkit
-RPi.GPIO
-pybluez @ git+https://github.com/pybluez/pybluez@4d46ce14d9e888e3b0c65d5d3ba2a703f8e5e861
