@@ -1,0 +1,7 @@
+FROM docker.io/library/ros:humble
+
+COPY pyproject.toml setup.cfg requirements.txt /opt/mappie
+RUN apt-get -y update \
+    && apt-get -y install python3-pip python3-virtualenv \
+    bluetooth bluez libbluetooth-dev \
+    && pip3 install -r /opt/mappie/requirements.txt

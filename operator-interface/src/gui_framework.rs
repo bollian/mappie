@@ -1,6 +1,5 @@
 use std::future::Future;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use eyre::{Result, WrapErr, eyre};
 use egui_winit::winit;
@@ -8,9 +7,7 @@ use egui_wgpu::wgpu;
 use egui::Context;
 use once_cell::sync::OnceCell;
 use winit::event::{Event, WindowEvent};
-use winit::event_loop::{ControlFlow, EventLoopProxy};
-
-use crate::ExitCode;
+use winit::event_loop::EventLoopProxy;
 
 static ELOOP_PROXY: OnceCell<Mutex<EventLoopProxy<UserEvent>>> = OnceCell::new();
 static ASYNC_RUNTIME: OnceCell<tokio::runtime::Runtime> = OnceCell::new();
@@ -54,6 +51,16 @@ where
         request_redraw();
         return res
     })
+}
+
+pub fn block_on<F>(future: F) -> F::Output
+where
+    F: Future + Send,
+    F::Output: Send + 'static,
+{
+    let rt = ASYNC_RUNTIME.get()
+        .expect("block_on called before async runtime initialization!");
+    rt.block_on(future)
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -107,10 +114,9 @@ pub trait App {
 }
 
 struct GraphicsContext {
-    window: winit::window::Window,
+    window: Arc<winit::window::Window>,
     painter: egui_wgpu::winit::Painter,
     platform: egui_winit::State,
-    egui_ctx: Context,
     pending_output: egui::FullOutput,
 }
 
@@ -122,48 +128,49 @@ where
     async fn graphics_constructor(event_loop: &winit::event_loop::EventLoopWindowTarget<UserEvent>)
         -> Result<GraphicsContext>
     {
-        let window = winit::window::WindowBuilder::new()
+        let window = Arc::new(winit::window::WindowBuilder::new()
             .with_decorations(true)
             .with_resizable(false)
             .with_transparent(false)
             .with_title("Mappie OI")
             .with_inner_size(winit::dpi::PhysicalSize {
-                width: 900,
-                height: 700,
+                width: 1280,
+                height: 800,
             })
             .build(&event_loop)
-            .unwrap();
+            .unwrap());
+        let viewport_id = egui::ViewportId::from_hash_of(window.id());
 
         // We use the egui_wgpu_backend crate as the render backend.
         let mut painter = egui_wgpu::winit::Painter::new(egui_wgpu::WgpuConfiguration {
-            backends: wgpu::Backends::PRIMARY,
-            depth_format: None,
             on_surface_error: Arc::new(surface_error_callback),
-            power_preference: wgpu::PowerPreference::HighPerformance,
+            supported_backends: wgpu::Backends::default(),
+            desired_maximum_frame_latency: None,
+            power_preference: wgpu::PowerPreference::LowPower,
             present_mode: wgpu::PresentMode::Fifo,
-            device_descriptor: wgpu::DeviceDescriptor {
-                label: Some("egui wgpu device"),
-                features: wgpu::Features::default(),
-                limits: wgpu::Limits::default(),
-            },
-        }, 1, 0, false);
-        unsafe { painter.set_window(Some(&window)) }.await
-            .wrap_err("Failed to set WebGPU painter's window")?;
+            device_descriptor: Arc::new(|_adapter| {
+                wgpu::DeviceDescriptor {
+                    label: Some("device_descriptor"),
+                    required_features: wgpu::Features::default(),
+                    required_limits: wgpu::Limits::default(),
+                }
+            }),
+        }, 1, None, false);
+        painter.set_window(viewport_id, Some(Arc::clone(&window))).await
+            .context("Failed to set WebGPU painter's window")?;
 
         let max_texture_side = painter.max_texture_side()
             .ok_or_else(|| eyre!("No maximum egui texture size provided"))?;
-        let mut platform = egui_winit::State::new(&event_loop);
-        platform.set_max_texture_side(max_texture_side);
-        platform.set_pixels_per_point(window.scale_factor() as f32);
 
         let egui_ctx = egui::Context::default();
         let pending_output = egui::FullOutput::default();
+        let mut platform = egui_winit::State::new(egui_ctx, viewport_id, &event_loop, None, None);
+        platform.set_max_texture_side(max_texture_side);
 
         Ok(GraphicsContext {
             window,
             painter,
             platform,
-            egui_ctx,
             pending_output,
         })
     }
@@ -185,10 +192,11 @@ where
     let mut gilrs = gilrs::Gilrs::new()
         .map_err(|e| eyre!("Unable to acquire gamepad input context: {}", e))?;
     let mut graphics = once_cell::unsync::OnceCell::<GraphicsContext>::new();
-    let event_loop = winit::event_loop::EventLoopBuilder::<UserEvent>::with_user_event().build();
+    let event_loop = winit::event_loop::EventLoopBuilder::<UserEvent>::with_user_event().build()
+        .context("Failed to acquire window event loop")?;
     ELOOP_PROXY.get_or_init(|| Mutex::new(event_loop.create_proxy()));
 
-    event_loop.run(move |event, event_loop, control_flow| {
+    event_loop.run(move |event, event_loop| {
         while let Some(gamepad_event) = gilrs.next_event() {
             match gamepad_event.event {
                 gilrs::EventType::AxisChanged(axis, value, _) => {
@@ -214,73 +222,73 @@ where
         }
 
         match event {
-            Event::RedrawRequested(..) => {
-                let graphics = match graphics.get_mut() {
-                    Some(g) => g,
-                    None => {
-                        eprintln!("Graphics not initialized before first draw");
-                        *control_flow = ControlFlow::ExitWithCode(ExitCode::GraphicsInitFailed as _);
-                        return
-                    }
-                };
-                let raw_input = graphics.platform.take_egui_input(&graphics.window);
-
-                // Call into user code and draw the window
-                let full_output = graphics.egui_ctx.run(raw_input, |ctx| {
-                    app.update(ctx, gamepad.clone())
-                });
-
-                gamepad.clear();
-                gamepad_input_dirty = false;
-                graphics.pending_output.append(full_output);
-                let egui::FullOutput {
-                    platform_output,
-                    repaint_after,
-                    textures_delta,
-                    shapes,
-                } = std::mem::take(&mut graphics.pending_output);
-
-                let clipped_primitives = graphics.egui_ctx.tessellate(shapes);
-                graphics.painter.paint_and_update_textures(
-                    graphics.egui_ctx.pixels_per_point(),
-                    [1.0, 0.0, 1.0, 0.0],
-                    &clipped_primitives,
-                    &textures_delta,
-                );
-
-                graphics.platform.handle_platform_output(
-                    &graphics.window, &graphics.egui_ctx, platform_output);
-
-                if repaint_after.is_zero() {
-                    // requesting immediate repaint
-                    *control_flow = ControlFlow::Poll;
-                } else {
-                    let repaint_after = std::cmp::min(repaint_after, Duration::from_millis(33));
-                    println!("waiting {:?}", repaint_after);
-                    *control_flow = ControlFlow::WaitUntil(
-                        std::time::Instant::now() + repaint_after
-                    );
-                }
-            }
             Event::WindowEvent { event: window_event, .. } => {
                 let graphics = match graphics.get_mut() {
                     Some(g) => g,
                     None => {
                         eprintln!("Graphics not initialized in time");
-                        *control_flow = ControlFlow::ExitWithCode(ExitCode::GraphicsInitFailed as _);
+                        event_loop.exit();
                         return
                     }
                 };
 
-                let event_response = graphics.platform.on_event(&graphics.egui_ctx, &window_event);
+                let event_response = graphics.platform.on_window_event(&graphics.window, &window_event);
+                if event_response.consumed {
+                    // egui doesn't want us to respond to this event
+                    return
+                }
                 if event_response.repaint {
                     graphics.window.request_redraw();
                 }
                 if !event_response.consumed {
                     match window_event {
                         WindowEvent::CloseRequested => {
-                            *control_flow = ControlFlow::Exit;
-                        }
+                            event_loop.exit();
+                        },
+                        WindowEvent::RedrawRequested => {
+                            let raw_input = graphics.platform.take_egui_input(&graphics.window);
+
+                            // Call into user code and draw the window
+                            let full_output = graphics.platform.egui_ctx().run(raw_input, |ctx| {
+                                app.update(ctx, gamepad.clone())
+                            });
+
+                            gamepad.clear();
+                            gamepad_input_dirty = false;
+                            graphics.pending_output.append(full_output);
+                            let egui::FullOutput {
+                                platform_output,
+                                textures_delta,
+                                shapes,
+                                pixels_per_point,
+                                viewport_output
+                            } = std::mem::take(&mut graphics.pending_output);
+
+                            let clipped_primitives = graphics.platform.egui_ctx().tessellate(shapes, pixels_per_point);
+                            let screenshot_requested = false;
+                            for (&viewport, _output) in viewport_output.iter() {
+                                let (_vsync_secs, _screenshot) = graphics.painter.paint_and_update_textures(
+                                    viewport, pixels_per_point, [1.0, 0.0, 1.0, 0.0],
+                                    &clipped_primitives,
+                                    &textures_delta,
+                                    screenshot_requested,
+                                );
+                            }
+
+                            graphics.platform.handle_platform_output(
+                                &graphics.window, platform_output);
+
+                            // if repaint_after.is_zero() {
+                            //     // requesting immediate repaint
+                            //     *control_flow = ControlFlow::Poll;
+                            // } else {
+                                // let repaint_after = std::cmp::min(repaint_after, Duration::from_millis(33));
+                                // println!("waiting {:?}", repaint_after);
+                                // *control_flow = ControlFlow::WaitUntil(
+                                //     std::time::Instant::now() + repaint_after
+                                // );
+                            // }
+                        },
                         _ => {}
                     }
                 }
@@ -291,7 +299,7 @@ where
                     Ok(_) => {},
                     Err(e) => {
                         eprintln!("Failed to initialize graphics: {}", e);
-                        *control_flow = ControlFlow::ExitWithCode(ExitCode::GraphicsInitFailed as _);
+                        event_loop.exit();
                         return
                     }
                 }
@@ -304,7 +312,7 @@ where
                 graphics.window.request_redraw();
             }
         }
-    })
+    }).context("Window event loop exited with error")
 }
 
 fn surface_error_callback(error: wgpu::SurfaceError) -> egui_wgpu::SurfaceErrorAction {

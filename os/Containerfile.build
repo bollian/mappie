@@ -1,0 +1,8 @@
+from debian:12 as build
+
+COPY . /src
+
+RUN apt update \
+    && apt install debootstrap qemu-user-static \
+    && debootstrap --arch arm64 bookworm /mnt http://deb.debian.org/debian
+

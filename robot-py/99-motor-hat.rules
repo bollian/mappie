@@ -1,0 +1,2 @@
+# recognize the megapi serial port and grant unpriviledged access
+KERNEL=="i2c-1" GROUP="mappie" MODE="0660"
