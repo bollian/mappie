@@ -1,0 +1,11 @@
+[package]
+name = "hardware-test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+adafruit_motorkit.workspace = true
+clap.workspace = true
+env_logger.workspace = true
+eyre.workspace = true
+linux-embedded-hal.workspace = true

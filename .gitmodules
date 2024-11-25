@@ -1,0 +1,3 @@
+[submodule "adafruit_motorkit"]
+	path = adafruit_motorkit
+	url = https://github.com/bollian/adafruit_motorkit

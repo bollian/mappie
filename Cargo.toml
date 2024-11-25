@@ -1,29 +1,47 @@
 [workspace]
 resolver = "2"
 members = [
+    "adafruit_motorkit",
     "bt-ctrl-proxy",
     "operator-interface",
     "robot",
-    "messages"
+    "messages",
+    "hardware-test"
 ]
+
+[profile.release]
+strip = "symbols"
 
 [workspace.dependencies]
 adafruit_motorkit = "0.1.1"
+async-signal = "0.2.10"
 bluer = { version = "0.17.1", features = ["rfcomm", "bluetoothd"] }
 clap = { version = "4.5.7", features = ["derive"] }
 env_logger = { version = "0.11.3", default-features = false, features = ["auto-color", "humantime"] }
 eyre = "0.6.12"
 futures-lite = "2.3.0"
+embedded-hal = "1.0.0"
 linux-embedded-hal = "0.4.0"
 log = "0.4.21"
+messages = { path = "messages" }
+mint = { version = "0.5.9", features = ["serde"] }
 pwm-pca9685 = "1.0.0"
+postcard = "1.0.8"
 once_cell = "1.19.0"
 rustix = { version = "0.38.34", default-features = false, features = ["net"] }
+scopeguard = "1.2.0"
 serde = { version = "1.0.203", features = ["derive"] }
 serde_json = "1.0.117"
+signal-hook = "0.3.17"
+smol = "2.0.0"
+tb6612fng = "0.2.0"
 thiserror = "1.0.61"
 tokio = { version = "1.38.0", features = ["net", "rt", "sync", "time"] }
 
 [patch.'crates-io']
 # patch for embedded-hal 1.0 support
-adafruit_motorkit = { git = "https://github.com/bollian/adafruit_motorkit", rev = "e22985f100929bd5db0c9fdce89712da1f57e77b" }
+adafruit_motorkit = { path = "adafruit_motorkit" }
+
+[patch.'crates-io'.tb6612fng]
+git = "https://github.com/rust-embedded-community/tb6612fng-rs"
+rev = "41d82765244e79919d9e80593d6c9e4936ea4846"

@@ -6,14 +6,19 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-adafruit_motorkit = { workspace = true }
-clap = { workspace = true }
-env_logger = { workspace = true }
-eyre = { workspace = true }
-futures-lite = { workspace = true }
-linux-embedded-hal = { workspace = true }
-log = { workspace = true }
-messages = { path = "../messages" }
-pwm-pca9685 = { workspace = true }
-serde_json = { workspace = true }
-smol = "2.0.0"
+adafruit_motorkit.workspace = true
+async-signal.workspace = true
+clap.workspace = true
+embedded-hal.workspace = true
+env_logger.workspace = true
+eyre.workspace = true
+futures-lite.workspace = true
+linux-embedded-hal.workspace = true
+log.workspace = true
+messages.workspace = true
+mint.workspace = true
+pwm-pca9685.workspace = true
+postcard.workspace = true
+tb6612fng.workspace = true
+smol.workspace = true
+scopeguard.workspace = true

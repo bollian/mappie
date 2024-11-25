@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-bluer.workspace = true
 crossbeam = "0.8.2"
 egui = "0.26.0"
 egui-wgpu = { version = "0.26.2", features = ["winit"] }
@@ -16,8 +15,9 @@ futures = "0.3.28"
 gilrs = "0.10.1"
 log.workspace = true
 messages = { path = "../messages" }
+mint.workspace = true
 once_cell.workspace = true
+postcard.workspace = true
 rustix.workspace = true
-serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
