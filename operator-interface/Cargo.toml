@@ -18,6 +18,5 @@ messages = { path = "../messages" }
 mint.workspace = true
 once_cell.workspace = true
 postcard.workspace = true
-rustix.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }

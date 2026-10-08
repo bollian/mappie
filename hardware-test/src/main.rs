@@ -1,99 +1,127 @@
-use std::ffi::OsString;
+mod i2c_motors;
+mod lidar;
+mod motors;
+mod pwm;
 
-use adafruit_motorkit::dc::DcMotor;
-use clap::{Parser, ValueEnum};
-use linux_embedded_hal as hal;
-use eyre::*;
+use std::io::Read;
 
-#[derive(ValueEnum, Copy, Clone, Debug)]
-#[value()]
-enum Motor {
-    FrontLeft,
-    FrontRight,
-    BackLeft,
-    BackRight,
-}
+use anyhow::{Context, Result};
+use clap::{Parser, Subcommand};
+use hardware::gpio::Gpio;
+use rustix::event::{PollFd, PollFlags, poll};
+use rustix::time::Timespec;
 
-#[derive(Parser, Clone, Debug)]
+use i2c_motors::*;
+use lidar::*;
+use motors::*;
+use pwm::*;
+
+#[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Speed to set the motors to
-    ///
-    /// The value provided will be clamped to the range [-1.0, 1.0], and negative values run the
-    /// motors in reverse.
-    #[arg(short = 's', long, default_value_t = 1.0)]
-    speed: f32,
+    #[command(subcommand)]
+    subcommand: Command,
 
-    /// Path to the I2C bus device file with an attached PWM controller
-    #[arg(short = 'd', long, default_value = "/dev/i2c-1")]
-    i2c_dev: OsString,
+    /// Skip initializing the GPIO pins, which could result in some connected hardware not working
+    #[arg(long, default_value_t = false)]
+    skip_gpio: bool,
 
-    /// Address of the PCA9685 PWM controller on the I2C bus
-    #[arg(short = 'a', long, default_value_t = 0x60)]
-    pwm_addr: u8,
+    /// Don't prompt for a safe exit (prevents the process from stopping when run in the background)
+    #[arg(long, default_value_t = false)]
+    no_prompt: bool,
+}
 
-    // /// PCA9685 prescalar that determines the PWM frequency
-    // #[arg(short = 'p', long, default_value_t = 4)]
-    // prescale: u8,
-
-    /// Wheels to spin
-    #[arg(value_enum, default_values_t = [Motor::FrontLeft, Motor::FrontRight, Motor::BackLeft, Motor::BackRight])]
-    wheels: Vec<Motor>,
+#[derive(Subcommand)]
+enum Command {
+    Motors(MotorsArgs),
+    Lidar(LidarArgs),
+    Pwm(PwmArgs),
+    I2cMotors(I2cMotorsArgs),
 }
 
 fn main() -> Result<()> {
     env_logger::init();
 
-    let mut args = Args::parse();
-    args.speed = args.speed.clamp(-1.0, 1.0);
-
-    let dev = hal::I2cdev::new(args.i2c_dev.as_os_str())
-        .wrap_err("Failed to open I2C device")?;
-    // let mut pwm = pwm_pca9685::Pca9685::new(dev, args.pwm_addr)
-    //     .map_err(|e| eyre::eyre!("Failed to construct pwm device: {:?}", e))?;
-    // pwm.enable()
-    //     .map_err(|e| eyre!("Failed to enable PWM: {:?}", e))?;
-    // pwm.set_prescale(args.prescale)
-    //     .map_err(|e| eyre!("Failed to set PWM prescale: {:?}", e))?;
-    let mut pwm = adafruit_motorkit::init_pwm(Some(dev))
-        .wrap_err("Failed to initialize PWM controller on motor hat")?;
-
-    let mut fl_drive_motor = DcMotor::try_new(&mut pwm, ports::FL_DRIVE_MOTOR)
-        .wrap_err("unable to construct front left motor")?;
-    let mut fr_drive_motor = DcMotor::try_new(&mut pwm, ports::FR_DRIVE_MOTOR)
-        .wrap_err("unable to construct front right motor")?;
-    let mut bl_drive_motor = DcMotor::try_new(&mut pwm, ports::BL_DRIVE_MOTOR)
-        .wrap_err("unable to construct back left motor")?;
-    let mut br_drive_motor = DcMotor::try_new(&mut pwm, ports::BR_DRIVE_MOTOR)
-        .wrap_err("unable to construct back right motor")?;
-
-    for wheel in args.wheels {
-        let motor = match wheel {
-            Motor::FrontLeft => &mut fl_drive_motor,
-            Motor::FrontRight => &mut fr_drive_motor,
-            Motor::BackLeft => &mut bl_drive_motor,
-            Motor::BackRight => &mut br_drive_motor,
-        };
-
-        motor.set_throttle(&mut pwm, args.speed)
-            .wrap_err("Issue setting speed of motor")?;
+    let args = Args::parse();
+    let mut motors = None;
+    let mut lidar = None;
+    let mut pwm = None;
+    let mut i2c_motors = None;
+    match args.subcommand {
+        Command::Motors(args) => {
+            motors = Some(MotorsTest::new(args)
+                .context("Failed to initialize motors test")?);
+        }
+        Command::Lidar(args) => {
+            lidar = Some(LidarTest::new(args)
+                .context("Failed to initialize lidar test")?);
+        }
+        Command::Pwm(args) => {
+            pwm = Some(PwmTest::new(args)
+                .context("Failed to initialize PWM test")?);
+        }
+        Command::I2cMotors(args) => {
+            i2c_motors = Some(I2cMotorsTest::new(args)
+                .context("Failed to initialize I2c motors test")?);
+        }
     }
 
-    println!("Hit Enter to stop the test...");
-    let mut line = String::new();
-    let _ = std::io::stdin().read_line(&mut line);
+    let _gpio = if args.skip_gpio {
+        None
+    } else {
+        Some(Gpio::new().context("Failed to initialize GPIO")?)
+    };
 
-    let _ = fl_drive_motor.set_throttle(&mut pwm, 0.0);
-    let _ = fr_drive_motor.set_throttle(&mut pwm, 0.0);
-    let _ = bl_drive_motor.set_throttle(&mut pwm, 0.0);
-    let _ = br_drive_motor.set_throttle(&mut pwm, 0.0);
+    if let Some(motors) = &mut motors {
+        motors.start();
+    }
+    if let Some(pwm) = &mut pwm {
+        pwm.start()
+            .context("Failed to start PWM test")?;
+    }
+    if let Some(i2c_motors) = &mut i2c_motors {
+        i2c_motors.start()
+            .context("Failed to start I2c motors test")?;
+    }
 
-    return Ok(());
-}
+    if !args.no_prompt {
+        // wait for the user to hit enter, periodically calling into the test so it can print
+        // things or do other periodic work
+        println!("Hit Enter to stop the test...");
+    }
 
-mod ports {
-    pub const BL_DRIVE_MOTOR: adafruit_motorkit::Motor = adafruit_motorkit::Motor::Motor1;
-    pub const BR_DRIVE_MOTOR: adafruit_motorkit::Motor = adafruit_motorkit::Motor::Motor2;
-    pub const FL_DRIVE_MOTOR: adafruit_motorkit::Motor = adafruit_motorkit::Motor::Motor3;
-    pub const FR_DRIVE_MOTOR: adafruit_motorkit::Motor = adafruit_motorkit::Motor::Motor4;
+    let mut stdin = std::io::stdin();
+    let mut stdin_buf = [0; 256];
+    loop {
+        const PRINT_PERIOD_MS: i64 = 20;
+        const PRINT_PERIOD: Timespec = Timespec {
+            tv_sec: 0,
+            tv_nsec: PRINT_PERIOD_MS * 1000 * 1000, // refresh 50 times a second
+        };
+
+        if args.no_prompt {
+            std::thread::sleep(std::time::Duration::from_millis(PRINT_PERIOD_MS as _));
+        } else {
+            let poll_count = poll(&mut [PollFd::new(&stdin, PollFlags::IN)], Some(&PRINT_PERIOD))
+                .context("Stdin poll operation failed")?;
+            if poll_count == 1 {
+                // check for if the user pressed Enter
+                let count = stdin.read(&mut stdin_buf[..])?;
+                if stdin_buf[..count].contains(&b'\n') {
+                    break
+                }
+                // clear the buffer because we don't care about anything aside from newlines
+                stdin_buf[..count].fill(0);
+            }
+        }
+
+        if let Some(pwm_test) = &mut pwm {
+            pwm_test.periodic()?;
+        }
+        if let Some(lidar_test) = &mut lidar {
+            lidar_test.periodic()?;
+        }
+    }
+
+    anyhow::Result::<()>::Ok(())
 }

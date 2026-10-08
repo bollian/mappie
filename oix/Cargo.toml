@@ -1,0 +1,17 @@
+[package]
+name = "oix"
+description = "Operator interface for driving the robot"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+env_logger.workspace = true
+gilrs = "0.11.1"
+hardware.workspace = true
+log.workspace = true
+messages.workspace = true
+scopeguard.workspace = true
+serialport.workspace = true
+tokio.workspace = true
+xilem = "0.4.0"

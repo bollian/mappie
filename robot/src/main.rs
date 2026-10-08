@@ -1,45 +1,64 @@
-// mod hardware;
-mod motor_hat;
+mod config;
 mod drive;
+mod motor_hat;
 
-use std::ffi::OsString;
-use std::io::ErrorKind;
+use std::path::PathBuf;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::time::Duration;
 
 use clap::Parser;
-use eyre::{eyre, bail, Result, WrapErr};
+use eyre::{eyre, Result, WrapErr};
+use hardware::HardwareError;
+use hardware::lidar::{Lidar, RposError};
 use futures_lite::prelude::*;
-use linux_embedded_hal as hal;
-use smol::net::UdpSocket;
+use messages::{listen_for_operator, ControlMessage, StatusMessage, SensorReading, StatusSender, ControlReceiver};
 
-pub type Pwm = pwm_pca9685::Pca9685<hal::I2cdev>;
+const DEFAULT_IPV4_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 9090);
+const DEFAULT_IPV6_ADDR: SocketAddr = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 9090);
 
 #[derive(Parser, Clone, Debug)]
 #[command(author, version, about, long_about = None)]
-struct Args {
+struct Conf {
     /// UDP socket address to listen for control message at
-    #[arg(short = 'l', long, default_value = "0.0.0.0:9090")]
-    listen_addr: String,
-
-    /// Path to the I2C bus device file with an attached PWM controller
-    #[arg(short = 'd', long, default_value = "/dev/i2c-1")]
-    i2c_dev: OsString,
-
-    /// Address of the PCA9685 PWM controller on the I2C bus
-    #[arg(short = 'a', long, default_value_t = 0x60)]
-    pwm_addr: u8,
+    #[arg(short = 'l', long = "listen-addresses", default_values_t = [DEFAULT_IPV4_ADDR])]
+    listen_addr: Vec<SocketAddr>,
 
     /// The maximum amount of time between main loop iterations
     #[arg(short = 'p', long, default_value_t = 16)]
     loop_period_ms: u64,
 
     /// The value below which movement commands are ignored
-    #[arg(long, default_value_t = 0.2)]
-    deadzone: f32
+    #[arg(long, default_value_t = 0.1)]
+    deadzone: f32,
+
+    /// Width of the wheel base in cm (wheel ground contact to wheel ground contact)
+    #[arg(long, default_value_t = 11.0 + 0.7 + 1.5)]
+    wheelbase_width: f32,
+
+    /// Length of the wheel base in cm (wheel ground contact to wheel ground contact)
+    #[arg(long, default_value_t = 11.0)]
+    wheelbase_length: f32,
+
+    /// Path to the I2C bus device to find the motor controller board on
+    #[arg(short = 'i', long = "i2c", default_value = "/dev/i2c-1")]
+    i2c_dev_path: PathBuf,
+
+    /// Path to the LIDAR device
+    #[arg(short = 'L', long = "lidar", default_value = "/dev/ttyUSB0")]
+    lidar_dev_path: String, // has to be a string because of limitations of the serialport library
+
+    /// Path to the JSON file with the hardware configuration for this robot
+    #[arg(short = 'c', long = "config", default_value = config::DEFAULT_CONFIG_PATH)]
+    config_path: PathBuf,
+
+    /// How long to wait for a message before considering a controller disconnected
+    #[arg(short = 'T', long, default_value_t = 5.0)]
+    timeout: f32,
 }
 
 fn main() -> Result<()> {
     env_logger::init();
-    let args = Args::parse();
+    let args = Conf::parse();
 
     // We need to handle signals to make sure proper clean up happens, e.g. stopping motors. Given
     // the safety-critical nature of this, it happens before all hardware initialization.
@@ -49,41 +68,10 @@ fn main() -> Result<()> {
         async_signal::Signal::Int,
     ]).wrap_err("Failed to create signal handler")?;
 
-    let dev = hal::I2cdev::new(args.i2c_dev.as_os_str())
-        .wrap_err("Failed to open I2C device")?;
-    let mut pwm = adafruit_motorkit::init_pwm(Some(dev))
-        .wrap_err("Failed to initialize PWM controller on motor hat")?;
-
-    let drive = drive::Drive::new(args.clone(), &mut pwm)
-        .wrap_err("Failed to initialize drive system")?;
-
-    let mut hardware = scopeguard::guard((pwm, drive), |(mut pwm, mut drive)| {
-        // reset all hardware to an off state when main() exits
-        drive.reset(&mut pwm);
-    });
-    let (pwm, drive) = &mut *hardware;
-
-    // create the task to listen for new, connecting operators
-    let (control_tx, control_rx) = smol::channel::bounded(10);
-    let _listen_task = smol::spawn({
-        let args = args.clone();
-        async move {
-            match establish_operators(args.clone(), control_tx.clone()).await {
-                Err(e) => {
-                    log::warn!("Control listener crashed: {e}");
-                    panic!("Control listener crashed: {e}")
-                    // log::trace!("Restarting control listener");
-                },
-                res => res,
-            }
-        }
-    });
-
-    let res = smol::block_on(async {
-        main_loop(args, pwm, drive, control_rx)
-            // The listen task is critical. If it exits unnexpectedly, exit the code
-            // .race(listen_task)
-            // Exit cleanly after shutdown signal
+    let rt = tokio::runtime::LocalRuntime::new()
+        .wrap_err("Failed to create async runtime")?;
+    return rt.block_on(async {
+        connection_loop(args)
             .race(async {
                 match sigs.next().await {
                     Some(Ok(sig)) => {
@@ -99,124 +87,121 @@ fn main() -> Result<()> {
                         unreachable!()
                     }
                 }
-            })
-            .await
-    });
-
-    res
+            }).await
+    })
 }
 
-/// Accepts connections from new operators
-async fn establish_operators(args: Args, control_tx: smol::channel::Sender<messages::Move>) -> Result<()> {
-    // let control_socket = smol::net::TcpListener::bind(args.listen_addr.as_str()).await?;
-
-    // loop {
-        // log::info!("Waiting for operator...");
-        // let (conn, _addr) = control_socket.accept().await?;
-        // log::info!("Accepted operator connection");
-    log::info!("Using connectionless operators...");
-    let uconn = smol::net::UdpSocket::bind(args.listen_addr.as_str()).await?;
-    smol::spawn(control_connection(uconn, control_tx.clone())).detach();
-    Ok(())
-    // }
-}
-
-/// Decodes messages from operators and sends them to the main loop
-async fn control_connection(conn: UdpSocket, control_tx: smol::channel::Sender<messages::Move>) -> Result<()> {
-    let mut buf = [0u8; messages::Move::POSTCARD_COBS_BUFFER_MAX_SIZE];
-    // let mut buf_insert_index = 0;
-    let mut received_msg_count = 0;
-
+async fn connection_loop(
+    args: Conf,
+) -> Result<()> {
     loop {
-        let len = match conn.recv(&mut buf).await {
-            Ok(len) => len,
-            Err(e) => match e.kind() {
-                ErrorKind::UnexpectedEof => {
-                    eyre::bail!("Unexpected EOF while receiving from operator")
-                },
-                _ => {
-                    return Err(eyre::Report::new(e)
-                        .wrap_err("Unhandled I/O error while receiving from operator"))
-                }
+        log::info!("Listening for new controller connection...");
+        let (status, controller) = listen_for_operator(args.listen_addr.iter().copied()).await?;
+        log::info!("Controller connected");
+        match main_loop(args.clone(), status, controller).await {
+            Ok(_) => {
+                log::info!("Clean shutdown");
+                return Ok(());
             }
-        };
-
-        if len == 0 {
-            log::warn!("Connection to operator closed!");
-            return Ok(())
-        }
-        if buf[len - 1] != 0 {
-            log::warn!("Didn't receive complete datagram! ({} msgs received)", received_msg_count);
-        }
-
-        // we've reached the end of a cobs packet, read this in as a message
-        let msg: messages::Move = match postcard::from_bytes_cobs(&mut buf[..len]) {
-            Ok(msg) => msg,
             Err(e) => {
-                log::warn!("Received invalid control message: {} ({} msgs received)", e, received_msg_count);
-                continue
+                log::warn!("Error during main loop: {e:?}. Restarting.")
             }
-        };
-        // next_msg_start = i + 1;
-        received_msg_count += 1;
-
-        if control_tx.send(msg).await.is_err() {
-            log::info!("Control channel closed. Exiting control connection");
-            return Ok(())
         }
-
-        // let last_insert_index = buf_insert_index;
-        // buf_insert_index += len;
-        // let mut next_msg_start = 0;
-
-        // Loop through the buffer, finding any full received messages by looking for the
-        // terminator byte (value 0)
-        // for i in last_insert_index..buf_insert_index {
-        //     let byte = buf[i];
-        //     if byte == 0 {
-        //     }
+        // if let Err(e) = drive.stop() {
+        //     return Err(e)
+        //         .wrap_err("Failed to stop drive motors during control reset");
         // }
-
-        // move any unprocessed data to the front of the buffer and reset the buf_insert_index,
-        // effectively erasing all the messages we just deserialized and processed
-        // buf.copy_within(next_msg_start..buf_insert_index, 0);
-        // buf_insert_index -= next_msg_start;
     }
 }
 
 async fn main_loop(
-    args: Args,
-    pwm: &mut Pwm,
-    drive: &mut drive::Drive,
-    control: smol::channel::Receiver<messages::Move>
+    args: Conf,
+    status: StatusSender,
+    controller: ControlReceiver,
 ) -> Result<()> {
     // follow the configured minimum update rate, even when a message isn't received
-    let minimum_update_period = std::time::Duration::from_millis(args.loop_period_ms);
-    let mut update_timer = smol::Timer::after(minimum_update_period);
+    let control_task = tokio::spawn(controller_task(args.clone(), controller));
+    let report_task = tokio::spawn(reporter_task(args.clone(), status));
+    let result: Result<(Result<()>, Result<()>), _> = tokio::try_join!(
+        control_task, report_task
+    );
+    match result {
+        Ok((contros_res, report_res)) => {
+            let mut final_res = Ok(());
+            if let Err(e) = contros_res {
+                final_res = Err(e.wrap_err("Control task exited with error"));
+            }
+            if let Err(e) = report_res {
+                final_res = Err(e.wrap_err("Report task exited with error"));
+            }
+            return final_res;
+        }
+        Err(e) => {
+            log::error!("Failed to join control or report tasks: {e:?}");
+            return Err(e.into())
+        }
+    }
+}
 
-    let mut movement;
+async fn controller_task(args: Conf, controller: ControlReceiver) -> Result<()> {
+    let mut drive = drive::Drive::new(args.clone())
+        .wrap_err("Failed to initialize drive system")?;
 
     log::debug!("Starting main loop");
+    let timeout_duration = Duration::from_secs_f32(args.timeout);
+    let mut ctrl_msg;
+
     loop {
         log::trace!("Waiting for control...");
-        let control = async { Some(control.recv().await) }
-            .race(async {
-                update_timer.next().await;
-                None
-            }).await;
-
-        log::trace!("Beginning main loop iteration");
-        if let Some(control) = control {
-            movement = match control {
-                Ok(c) => c,
-                Err(_) => bail!("Control unexpectedly lost!")
-            };
-        } else {
-            log::trace!("Control timed out in main loop");
-            movement = messages::Move::stop();
+        match tokio::time::timeout(timeout_duration, controller.receive()).await {
+            Ok(Ok(c)) => ctrl_msg = c,
+            Ok(Err(e)) => {
+                let msg = "Control unexpectedly lost!";
+                log::info!("{msg}");
+                return Err(e)
+                    .wrap_err(msg)
+            }
+            Err(timeout) => {
+                let msg = "Timed out waiting for control message in main loop";
+                log::info!("{msg}: {timeout}");
+                return Err(timeout)
+                    .wrap_err(msg)
+            }
         }
-        update_timer.set_after(minimum_update_period);
 
-        drive.main_loop(pwm, movement);
+        match ctrl_msg {
+            ControlMessage::Move(m) => {
+                log::trace!("Driving with {m}");
+                drive.control(m)
+            },
+            ControlMessage::EstablishControl => {
+                log::debug!("Unexpected handshake message from controller. Ignoring");
+            }
+        }
+    }
+}
+
+async fn reporter_task(args: Conf, mut status: StatusSender) -> Result<()> {
+    let mut lidar = Lidar::new(args.lidar_dev_path.as_str())
+        .wrap_err("Failed to open LIDAR device")?;
+
+    log::debug!("Starting sensors loop");
+    let minimum_update_period = Duration::from_millis(args.loop_period_ms);
+    let mut interval = tokio::time::interval(minimum_update_period);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        log::trace!("Waiting for sensor data...");
+        interval.tick().await;
+        let scan = match lidar.grab_scan() {
+            Ok(s) => s,
+            Err(HardwareError::Lidar(RposError::OperationTimeout)) => {
+                log::warn!("Timeout grabbing LIDAR scan... ignoring");
+                continue
+            },
+            Err(e) => return Err(e.into())
+        };
+        let reading = SensorReading { scan };
+        status.update(&StatusMessage::SensorReading(reading)).await?;
     }
 }

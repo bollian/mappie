@@ -1,12 +1,13 @@
 use crate::gui_framework::GamepadInput;
 use messages::Move;
+
 use std::io::ErrorKind;
-// use tokio::net::TcpStream;
+
 use tokio::net::UdpSocket;
 
 pub struct OperatorInterface {
     pub connection: UdpSocket,
-    pub buffer: [u8; messages::Move::POSTCARD_COBS_BUFFER_MAX_SIZE],
+    pub buffer: [u8; messages::ControlMessage::BUF_SIZE],
     pub skipped_msgs_count: u32,
 }
 
@@ -14,7 +15,7 @@ impl OperatorInterface {
     pub fn new(connection: UdpSocket) -> Self {
         Self {
             connection,
-            buffer: [0; messages::Move::POSTCARD_COBS_BUFFER_MAX_SIZE],
+            buffer: [0; _],
             skipped_msgs_count: 0,
         }
     }

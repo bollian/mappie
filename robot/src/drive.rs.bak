@@ -1,0 +1,128 @@
+use eyre::{Result, WrapErr};
+use messages::Move;
+use nalgebra::Vector3;
+use hardware::motor::{Motor, ports};
+use hardware::gpio;
+
+pub struct Drive {
+    conf: crate::Conf,
+    fl_motor: Motor,
+    bl_motor: Motor,
+    fr_motor: Motor,
+    br_motor: Motor,
+}
+
+impl Drive {
+    pub fn new(conf: crate::Conf) -> Result<Self> {
+        let gpio = gpio::Gpio::new()?;
+        let fl_motor = Motor::new(
+            &gpio,
+            ports::FRONT_LEFT_PWM_CHANNEL,
+            ports::FRONT_LEFT_FORWARD_ENABLE,
+            ports::FRONT_LEFT_BACKWARD_ENABLE,
+        ).wrap_err("Failed to initialize front-left motor")?;
+        let bl_motor = Motor::new(
+            &gpio,
+            ports::BACK_LEFT_PWM_CHANNEL,
+            ports::BACK_LEFT_FORWARD_ENABLE,
+            ports::BACK_LEFT_BACKWARD_ENABLE,
+        ).wrap_err("Failed to initialize front-right motor")?;
+        let fr_motor = Motor::new(
+            &gpio,
+            ports::FRONT_RIGHT_PWM_CHANNEL,
+            ports::FRONT_RIGHT_FORWARD_ENABLE,
+            ports::FRONT_RIGHT_BACKWARD_ENABLE,
+        ).wrap_err("Failed to initialize front-right motor")?;
+        let br_motor = Motor::new(
+            &gpio,
+            ports::BACK_RIGHT_PWM_CHANNEL,
+            ports::BACK_RIGHT_FORWARD_ENABLE,
+            ports::BACK_RIGHT_BACKWARD_ENABLE,
+        ).wrap_err("Failed to initialize back-right motor")?;
+
+        Ok(Self {
+            conf,
+            fl_motor,
+            bl_motor,
+            fr_motor,
+            br_motor,
+        })
+    }
+
+    pub fn main_loop(&mut self, control: Move) {
+        let Move { translate, rotate } = control;
+
+        fn deadzone(val: f32, zone: f32) -> f32 {
+            let zone = zone.abs();
+            if val < zone && val > -zone {
+                return 0.0
+            }
+            val
+        }
+
+        // deadzones prevent motors being sent power that's too low to actually move the bot, which
+        // would be a stall scenario and could lead to excess power draw, noise, and motor wear
+        let x = deadzone(translate.x, self.conf.deadzone);
+        let y = deadzone(translate.y, self.conf.deadzone);
+        let rot = deadzone(rotate, self.conf.deadzone);
+
+        // Scale control down to a unit vector if we're being told to do something we're uncapable
+        // of. This will happen if the user instructs us to move 100% forwards AND sideways
+        // simultaneously, for example.
+        let v = Vector3::new(x, y, rot);
+        let norm = v.norm();
+        let v = if norm > 1.0 {
+            v.unscale(norm)
+        } else { v };
+
+        let speed = speeds(&self.conf, v.x, v.y, v.z);
+        self.fl_motor.set_speed(-speed.fl);
+        self.bl_motor.set_speed(-speed.bl);
+        self.fr_motor.set_speed(speed.fr);
+        self.br_motor.set_speed(speed.br);
+    }
+
+    pub fn reset(&mut self) {
+        let _ = self.fl_motor.set_speed(0.0);
+        let _ = self.bl_motor.set_speed(0.0);
+        let _ = self.fr_motor.set_speed(0.0);
+        let _ = self.br_motor.set_speed(0.0);
+    }
+}
+
+struct Speeds {
+    /// Front-Left
+    fl: f32,
+
+    /// Back-Left
+    bl: f32,
+
+    /// Front-Right
+    fr: f32,
+
+    /// Back-Right
+    br: f32,
+}
+
+fn speeds(conf: &crate::Conf, vx: f32, vy: f32, rot: f32) -> Speeds {
+    // shape parameter of the robot
+    let t = (conf.wheelbase_width + conf.wheelbase_length) / 2.0;
+
+    let w = 4. * rot.powi(2);
+    let w = w + 3. * vx.powi(2);
+    let w = w + 3. * vy.powi(2);
+    let w = (w * t.powi(2)) - rot.powi(2);
+    let w = w.sqrt();
+
+    let fl = (t * vx) + (t * vy) - rot - w;
+    let fr = (-t * vx) + (t * vy) + rot - w;
+    let bl = (-t * vx) + (t * vy) - rot + w;
+    let br = (t * vx) + (t * vy) + rot + w;
+
+    let fl = fl / 4. / t;
+    let fr = fr / 4. / t;
+    let bl = bl / 4. / t;
+    let br = br / 4. / t;
+
+    return Speeds { fl, fr, bl, br };
+}
