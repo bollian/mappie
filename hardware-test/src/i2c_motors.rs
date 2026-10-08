@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::path::Path;
 use anyhow::{Context, Result};
-use hiwonder_encoder_motor_module::{MotorType, set_motors_type, set_pwms};
+use hiwonder_encoder_motor_module::{MotorType, set_pwms};
 use hardware::hiwonder_motor_board::init_motors;
 use linux_embedded_hal::I2cdev;
 
