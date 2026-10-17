@@ -13,6 +13,35 @@ use tokio::time::timeout;
 
 use chunk::{ChunkedSender, ChunkedReceiver};
 
+pub struct PostcardSender<T: Serialize>(ChunkedSender);
+
+impl<T: Serialize> PostcardSender<T> {
+    pub fn new(socket: Arc<UdpSocket>, max_serialization_size: usize) -> Self {
+        Self(ChunkedSender::new(socket, max_serialization_size))
+    }
+
+    pub fn send(&mut self) -> Result<()> {
+        todo!()
+    }
+}
+
+pub struct PostcardReceiver(ChunkedReceiver);
+
+impl<T: for<'a> Deserialize<'a>> PostcardReceiver<T> {
+    pub fn new(socket: Arc<UdpSocket>, max_serialization_size: usize) -> Self {
+        Self(ChunkedReceiver::new(socket, max_serialization_size))
+    }
+
+    pub fn dropped_chunks(&self) -> usize { self.0.dropped_chunks() }
+    pub fn missed_frames(&self) -> usize { self.0.missed_frames() }
+    pub fn received_frames(&self) -> usize { self.0.received_frames() }
+    pub fn received_chunks(&self) -> usize { self.0.received_chunks() }
+
+    pub fn receive(&mut self) -> Result<(T, SocketAddr)> {
+        todo!()
+    }
+}
+
 pub type StatusSender = ChunkedSender<StatusMessage>;
 pub type StatusReceiver = ChunkedReceiver<StatusMessage>;
 

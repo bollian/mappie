@@ -116,6 +116,9 @@ pub struct ChunkedReceiver<T: for<'a> Deserialize<'a>> {
     /// Number of frames we've successfully received
     received_frames: usize,
 
+    /// Number of chunks we've successfully received
+    received_chunks: usize,
+
     _phantom: PhantomData<T>,
 }
 
@@ -136,6 +139,7 @@ impl<T: for<'a> Deserialize<'a>> ChunkedReceiver<T> {
             dropped_packets: 0,
             missed_frames: 0,
             received_frames: 0,
+            received_chunks: 0,
             _phantom: Default::default(),
         }
     }
@@ -150,6 +154,10 @@ impl<T: for<'a> Deserialize<'a>> ChunkedReceiver<T> {
 
     pub fn received_frames(&self) -> usize {
         self.received_frames
+    }
+
+    pub fn received_chunks(&self) -> usize {
+        self.received_chunks
     }
 
     pub async fn receive(&mut self) -> Result<(T, SocketAddr)> {
@@ -278,7 +286,9 @@ impl<T: for<'a> Deserialize<'a>> ChunkedReceiver<T> {
         // start with a fresh deserialization buffer
         self.serialization_scratch_buf.clear();
 
+        let mut received_chunks = 0;
         let all_received = Self::iter_chunks(&self.chunk_trackers, &self.chunk_buffers, |header, data| {
+            received_chunks += 1;
             self.serialization_scratch_buf.extend(data);
 
             if header.continuation_flag {
@@ -292,7 +302,11 @@ impl<T: for<'a> Deserialize<'a>> ChunkedReceiver<T> {
             return None;
         }
 
-        Some(postcard::from_bytes(self.serialization_scratch_buf.as_slice()))
+        let msg = postcard::from_bytes(self.serialization_scratch_buf.as_slice());
+        if msg.is_ok() {
+            self.received_chunks = self.received_chunks.saturating_add(received_chunks);
+        }
+        Some(msg)
     }
 }
 
@@ -334,28 +348,113 @@ impl<T: Serialize> ChunkedSender<T> {
             Err(e) => panic!("Unexpected serialization error ({e})"),
         };
 
-        let serialized_end = serialized.len() + HEADER_SIZE;
-        let mut content_index = 0;
+        let len = serialized.len();
+        let mut scratch_buf = &mut self.tx_buf[..len + HEADER_SIZE];
         let mut chunk_number = 0;
-        while content_index < serialized_end {
-            let end = (content_index + CHUNK_SIZE).min(serialized_end);
+        while scratch_buf.len() > HEADER_SIZE {
+            let (end, continuation_flag) = if scratch_buf.len() <= CHUNK_SIZE {
+                (scratch_buf.len(), false)
+            } else {
+                (CHUNK_SIZE, true)
+            };
             let header = Header {
                 frame_identifier: identifier,
                 chunk_identifier: chunk_number,
-                continuation_flag: end != serialized_end
+                continuation_flag,
             }.to_network_bytes();
 
-            let chunk_content = &mut self.tx_buf[content_index..end];
-            let (msg_header, _) = chunk_content.split_first_chunk_mut()
-                .expect("Accessing header out of impossibly small message buffer");
+            let (msg_header, _) = scratch_buf.split_first_chunk_mut()
+                .expect("Writing header into impossibly small message buffer");
             *msg_header = header;
 
-            self.socket.send(chunk_content).await?;
+            self.socket.send(&scratch_buf[..end]).await?;
 
-            content_index += CHUNK_DATA_SIZE;
+            scratch_buf = &mut scratch_buf[(end - HEADER_SIZE)..];
             chunk_number += 1;
         }
 
         return Ok(())
+    }
+
+    pub fn serialization_buf(&mut self) -> &mut [u8] {
+        &mut self.tx_buf[HEADER_SIZE..]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use serde::{Deserialize, Serialize};
+
+    const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+    async fn sender_receiver<T: Serialize + for<'a> Deserialize<'a>>() -> (ChunkedSender<T>, ChunkedReceiver<T>) {
+        const BUF_SIZE: usize = CHUNK_SIZE * 2;
+
+        let receiver = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let receiver_addr = receiver.local_addr().unwrap();
+        let receiver = ChunkedReceiver::new(receiver, BUF_SIZE);
+
+        let sender = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        sender.connect(receiver_addr).await.unwrap();
+        let sender = ChunkedSender::new(sender, BUF_SIZE);
+
+        (sender, receiver)
+    }
+
+    #[tokio::test]
+    async fn send_simple_message() {
+        let (mut sender, mut receiver) = sender_receiver().await;
+        sender.update(&true).await.unwrap();
+        assert!(receiver.receive().await.unwrap().0);
+    }
+
+    // #[tokio::test]
+    // async fn send_empty_message() {
+    //     tokio::time::timeout(TEST_TIMEOUT, async {
+    //         let (mut sender, mut receiver) = sender_receiver().await;
+    //         sender.update(&()).await.unwrap();
+    //         receiver.receive().await.unwrap();
+    //     }).await.unwrap()
+    // }
+
+    #[tokio::test]
+    async fn send_normal_message() {
+        #[derive(Deserialize, Serialize, Debug, PartialEq, Eq)]
+        struct NormalMessage {
+            first: u8,
+            second: u16,
+            third: String,
+        }
+
+        let data = NormalMessage {
+            first: 1,
+            second: 2,
+            third: "hello world".to_string(),
+        };
+        let (mut sender, mut receiver) = sender_receiver().await;
+        sender.update(&data).await.unwrap();
+        assert_eq!(receiver.receive().await.unwrap().0, data);
+    }
+
+    #[tokio::test]
+    async fn send_full_message() {
+        // minus 2 bytes because the array length gets encoded
+        let data = vec![0; CHUNK_DATA_SIZE - 2];
+        let (mut sender, mut receiver) = sender_receiver().await;
+        sender.update(&data).await.unwrap();
+        assert_eq!(receiver.receive().await.unwrap().0, data);
+    }
+
+    /// Send a message that takes slightly more than one frame
+    #[tokio::test]
+    async fn send_slightly_large_message() {
+        let data = vec![0; CHUNK_DATA_SIZE];
+        let (mut sender, mut receiver) = sender_receiver().await;
+        sender.update(&data).await.unwrap();
+        assert_eq!(receiver.receive().await.unwrap().0, data);
+        assert_eq!(receiver.received_chunks(), 2);
     }
 }
