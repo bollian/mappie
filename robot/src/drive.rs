@@ -3,7 +3,6 @@ use hardware::hiwonder_motor_board::*;
 use hiwonder_encoder_motor_module::{MotorType, set_pwms};
 use linux_embedded_hal::I2cdev;
 use messages::Move;
-use nalgebra::Vector3;
 
 use crate::config::Config;
 
@@ -41,16 +40,6 @@ impl Drive {
         let y = deadzone(translate.y, self.conf.deadzone);
         let rot = deadzone(rotate, self.conf.deadzone);
 
-        // Scale control down to a unit vector if we're being told to do something we're uncapable
-        // of. This will happen if the user instructs us to move 100% forwards AND sideways
-        // simultaneously, for example.
-        // let v = Vector3::new(x, y, rot);
-        // let norm = v.norm();
-        // let v = if norm > 1.0 {
-        //     v.unscale(norm)
-        // } else { v };
-
-        // let speeds = mecanum_wheel_speeds(self.conf.wheelbase_width, self.conf.wheelbase_length, x, y, rot);
         let speeds = mecanum_wheel_speeds(x, y, rot);
         if let Err(e) = self.set_speeds(speeds) {
             log::error!("Failed to set motor speeds: {e}");
@@ -104,53 +93,23 @@ struct Speeds {
     br: f32,
 }
 
-// fn mecanum_wheel_speeds(wheelbase_width: f32, wheelbase_length: f32, vx: f32, vy: f32, rot: f32) -> Speeds {
-//     // shape parameter of the robot
-//     let t = (wheelbase_width + wheelbase_length) / 2.0;
-//
-//     let w = 4. * rot.powi(2);
-//     let w = w + 3. * vx.powi(2);
-//     let w = w + 3. * vy.powi(2);
-//     let w = (w * t.powi(2)) - rot.powi(2);
-//     let w = w.sqrt();
-//
-//     let fl = (t * vx) + (t * vy) - rot - w;
-//     let fr = (-t * vx) + (t * vy) + rot - w;
-//     let bl = (-t * vx) + (t * vy) - rot + w;
-//     let br = (t * vx) + (t * vy) + rot + w;
-//
-//     let fl = fl / 4. / t;
-//     let fr = fr / 4. / t;
-//     let bl = bl / 4. / t;
-//     let br = br / 4. / t;
-//
-//     return Speeds { fl, fr, bl, br };
-// }
-
 fn mecanum_wheel_speeds(vx: f32, vy: f32, rot: f32) -> Speeds {
-    let fl = vy + vx + rot;
-    let bl = vy - vx + rot;
-    let fr = vy - vx - rot;
-    let br = vy + vx - rot;
+    let mut fl = vy + vx + rot;
+    let mut bl = vy - vx + rot;
+    let mut fr = vy - vx - rot;
+    let mut br = vy + vx - rot;
 
-    let fl = fl.clamp(-1.0, 1.0);
-    let bl = bl.clamp(-1.0, 1.0);
-    let fr = fr.clamp(-1.0, 1.0);
-    let br = br.clamp(-1.0, 1.0);
+    // scale the speeds down if we find ourselves trying to go more than 100% on a single wheel
+    let div = fl.abs()
+        .max(bl.abs())
+        .max(fr.abs())
+        .max(br.abs());
+    if div > 1.0 {
+        fl /= div;
+        bl /= div;
+        fr /= div;
+        br /= div;
+    }
 
     return Speeds { fl, bl, fr, br };
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn full_forward_speeds() {
-        let speeds = mecanum_wheel_speeds(10.0, 10.0, 0.0, 1.0, 0.0);
-        assert_eq!(speeds.fl, 1.0);
-        assert_eq!(speeds.bl, 1.0);
-        assert_eq!(speeds.fr, 1.0);
-        assert_eq!(speeds.br, 1.0);
-    }
 }

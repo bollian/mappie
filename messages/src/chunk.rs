@@ -48,7 +48,7 @@ impl Header {
 
 /// Amount of serialized data that can fit into a single status message
 ///
-/// ```
+/// ```text
 /// +------------------+-------------------+------------------+
 /// |      16 bits     |       1 bit       |     15 bits      |
 /// +------------------+-------------------+------------------+
