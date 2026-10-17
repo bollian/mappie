@@ -1,6 +1,7 @@
 mod config;
 mod drive;
 
+use std::convert::Infallible;
 use std::path::PathBuf;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
@@ -69,7 +70,7 @@ fn main() -> Result<()> {
 
     let rt = tokio::runtime::LocalRuntime::new()
         .wrap_err("Failed to create async runtime")?;
-    return rt.block_on(async {
+    let res = rt.block_on(async {
         connection_loop(args)
             .race(async {
                 match sigs.next().await {
@@ -87,29 +88,27 @@ fn main() -> Result<()> {
                     }
                 }
             }).await
-    })
+    });
+    match res {
+        Err(e) => return Err(e)
+    }
 }
 
 async fn connection_loop(
     args: Conf,
-) -> Result<()> {
+) -> Result<Infallible> {
     loop {
         log::info!("Listening for new controller connection...");
         let (status, controller) = listen_for_operator(args.listen_addr.iter().copied()).await?;
         log::info!("Controller connected");
         match main_loop(args.clone(), status, controller).await {
             Ok(_) => {
-                log::info!("Clean shutdown");
-                return Ok(());
+                log::info!("Clean task shutdown");
             }
             Err(e) => {
                 log::warn!("Error during main loop: {e:?}. Restarting.")
             }
         }
-        // if let Err(e) = drive.stop() {
-        //     return Err(e)
-        //         .wrap_err("Failed to stop drive motors during control reset");
-        // }
     }
 }
 
