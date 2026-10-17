@@ -1,6 +1,5 @@
 mod config;
 mod drive;
-mod motor_hat;
 
 use std::path::PathBuf;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
