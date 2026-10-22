@@ -2,6 +2,7 @@ pub mod chunk;
 
 use std::fmt::{Display, Formatter};
 use std::io::{self, Result};
+use std::marker::PhantomData;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,37 +14,64 @@ use tokio::time::timeout;
 
 use chunk::{ChunkedSender, ChunkedReceiver};
 
-pub struct PostcardSender<T: Serialize>(ChunkedSender);
+pub struct PostcardSender<T: Serialize> {
+    chunked: ChunkedSender,
+    _phantom: PhantomData<T>,
+}
 
 impl<T: Serialize> PostcardSender<T> {
     pub fn new(socket: Arc<UdpSocket>, max_serialization_size: usize) -> Self {
-        Self(ChunkedSender::new(socket, max_serialization_size))
+        Self {
+            chunked: ChunkedSender::new(socket, max_serialization_size),
+            _phantom: PhantomData,
+        }
     }
 
-    pub fn send(&mut self) -> Result<()> {
-        todo!()
+    pub async fn send(&mut self, msg: &T) -> Result<()> {
+        let serialized_len = {
+            let serialization_buf = self.chunked.serialization_buf();
+            match postcard::to_slice(msg, serialization_buf) {
+                Ok(slice) => slice.len(),
+                Err(postcard::Error::SerializeBufferFull) => {
+                    let desc = format!("Serialized message was larger than configured {} byte limit", serialization_buf.len());
+                    return Err(io::Error::new(io::ErrorKind::OutOfMemory, desc));
+                },
+                Err(e) => panic!("Unexpected serialization error ({e})"),
+            }
+        };
+
+        self.chunked.send(serialized_len).await
     }
 }
 
-pub struct PostcardReceiver(ChunkedReceiver);
+pub struct PostcardReceiver<T: for<'a> Deserialize<'a>> {
+    chunked: ChunkedReceiver,
+    _phantom: PhantomData<T>,
+}
 
 impl<T: for<'a> Deserialize<'a>> PostcardReceiver<T> {
     pub fn new(socket: Arc<UdpSocket>, max_serialization_size: usize) -> Self {
-        Self(ChunkedReceiver::new(socket, max_serialization_size))
+        Self {
+            chunked: ChunkedReceiver::new(socket, max_serialization_size),
+            _phantom: PhantomData,
+        }
     }
 
-    pub fn dropped_chunks(&self) -> usize { self.0.dropped_chunks() }
-    pub fn missed_frames(&self) -> usize { self.0.missed_frames() }
-    pub fn received_frames(&self) -> usize { self.0.received_frames() }
-    pub fn received_chunks(&self) -> usize { self.0.received_chunks() }
+    pub fn dropped_chunks(&self) -> usize { self.chunked.dropped_chunks() }
+    pub fn missed_frames(&self) -> usize { self.chunked.missed_frames() }
+    pub fn received_frames(&self) -> usize { self.chunked.received_frames() }
+    pub fn received_chunks(&self) -> usize { self.chunked.received_chunks() }
 
-    pub fn receive(&mut self) -> Result<(T, SocketAddr)> {
-        todo!()
+    pub async fn receive(&mut self) -> Result<(T, SocketAddr)> {
+        let (serialized, addr) = self.chunked.receive().await?;
+        let msg = postcard::from_bytes(serialized)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        Ok((msg, addr))
     }
 }
 
-pub type StatusSender = ChunkedSender<StatusMessage>;
-pub type StatusReceiver = ChunkedReceiver<StatusMessage>;
+pub type StatusSender = PostcardSender<StatusMessage>;
+pub type StatusReceiver = PostcardReceiver<StatusMessage>;
 
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq)]
 pub enum ControlMessage {
@@ -211,5 +239,75 @@ impl ControlReceiver {
         let msg = postcard::from_bytes_cobs(&mut buf[..n])
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         Ok((msg, addr))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+
+    async fn sender_receiver<T: Serialize + for<'a> Deserialize<'a>>() -> (PostcardSender<T>, PostcardReceiver<T>) {
+        const BUF_SIZE: usize = 512 * 2;
+
+        let receiver = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let receiver_addr = receiver.local_addr().unwrap();
+        let receiver = PostcardReceiver::new(receiver, BUF_SIZE);
+
+        let sender = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        sender.connect(receiver_addr).await.unwrap();
+        let sender = PostcardSender::new(sender, BUF_SIZE);
+
+        (sender, receiver)
+    }
+
+    #[tokio::test]
+    async fn send_simple_message() {
+        let (mut sender, mut receiver) = sender_receiver().await;
+        sender.send(&true).await.unwrap();
+        assert!(receiver.receive().await.unwrap().0);
+    }
+
+    #[tokio::test]
+    async fn send_empty_message() {
+        let (mut sender, mut receiver) = sender_receiver().await;
+        sender.send(&()).await.unwrap();
+        receiver.receive().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn send_normal_message() {
+        #[derive(Deserialize, Serialize, Debug, PartialEq, Eq)]
+        struct NormalMessage {
+            first: u8,
+            second: u16,
+            third: String,
+        }
+
+        let data = NormalMessage {
+            first: 1,
+            second: 2,
+            third: "hello world".to_string(),
+        };
+        let (mut sender, mut receiver) = sender_receiver().await;
+        sender.send(&data).await.unwrap();
+        assert_eq!(receiver.receive().await.unwrap().0, data);
+    }
+
+    #[tokio::test]
+    async fn send_full_message() {
+        let data = vec![0; 508 - 2];
+        let (mut sender, mut receiver) = sender_receiver().await;
+        sender.send(&data).await.unwrap();
+        assert_eq!(receiver.receive().await.unwrap().0, data);
+    }
+
+    #[tokio::test]
+    async fn send_slightly_large_message() {
+        let data = vec![0; 508];
+        let (mut sender, mut receiver) = sender_receiver().await;
+        sender.send(&data).await.unwrap();
+        assert_eq!(receiver.receive().await.unwrap().0, data);
+        assert_eq!(receiver.received_chunks(), 2);
     }
 }

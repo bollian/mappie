@@ -320,7 +320,9 @@ impl AppData {
                     return Err(crate::warn!("Selected gamepad was disconnected"));
                 }
             };
-            let x = gamepad.value(Axis::LeftStickX);
+            // invert x-axis since controllers report left as positive, and the robot treats the
+            // right as the positive direction using a right-handed coordinate system
+            let x = -gamepad.value(Axis::LeftStickX);
             let y = gamepad.value(Axis::LeftStickY);
             let rotate = gamepad.value(Axis::RightStickX);
             ControlMessage::Move(Move {

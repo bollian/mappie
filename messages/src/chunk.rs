@@ -1,10 +1,8 @@
 use std::io::{self, Result};
-use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::ops::ControlFlow;
 
-use serde::{Deserialize, Serialize};
 use tokio::net::UdpSocket;
 
 /// Maximum size of a status message chunk.
@@ -81,7 +79,7 @@ struct ChunkTracker {
     buffer_len: usize,
 }
 
-pub struct ChunkedReceiver<T: for<'a> Deserialize<'a>> {
+pub struct ChunkedReceiver {
     pub(crate) socket: Arc<UdpSocket>, // can be shared between sender and receiver
 
     /// Expected frame identifier for the next received chunk
@@ -90,8 +88,7 @@ pub struct ChunkedReceiver<T: for<'a> Deserialize<'a>> {
     /// counter, depending on the exact value received.
     next_frame: u16,
 
-    /// Where received data is saved in chunk form before final assembly into
-    /// `serialization_scratch_buf`
+    /// Where received data is saved in chunk form before final assembly
     chunk_buffers: Vec<[u8; CHUNK_SIZE]>,
 
     /// Index of each item in this list is the chunk identifier for that tracker
@@ -104,8 +101,8 @@ pub struct ChunkedReceiver<T: for<'a> Deserialize<'a>> {
     /// us to avoid iterating the entire tracker list as an optimization in some situations.
     last_chunk: u16,
 
-    /// Where received data is copied to before final deserialization
-    serialization_scratch_buf: Vec<u8>,
+    /// Where received data is assembled from its chunks
+    assembly_buf: Vec<u8>,
 
     /// Number of dropped packets
     dropped_packets: usize,
@@ -118,11 +115,9 @@ pub struct ChunkedReceiver<T: for<'a> Deserialize<'a>> {
 
     /// Number of chunks we've successfully received
     received_chunks: usize,
-
-    _phantom: PhantomData<T>,
 }
 
-impl<T: for<'a> Deserialize<'a>> ChunkedReceiver<T> {
+impl ChunkedReceiver {
     pub fn new(socket: Arc<UdpSocket>, max_serialization_size: usize) -> Self {
         let min_chunk_count = min_chunk_count_for_data(max_serialization_size);
         if min_chunk_count > MAX_CHUNK_COUNT {
@@ -135,12 +130,11 @@ impl<T: for<'a> Deserialize<'a>> ChunkedReceiver<T> {
             chunk_buffers: Vec::with_capacity(min_chunk_count),
             chunk_trackers: vec![Default::default(); min_chunk_count],
             last_chunk: 0,
-            serialization_scratch_buf: Vec::with_capacity(max_serialization_size),
+            assembly_buf: Vec::with_capacity(max_serialization_size),
             dropped_packets: 0,
             missed_frames: 0,
             received_frames: 0,
             received_chunks: 0,
-            _phantom: Default::default(),
         }
     }
 
@@ -160,7 +154,7 @@ impl<T: for<'a> Deserialize<'a>> ChunkedReceiver<T> {
         self.received_chunks
     }
 
-    pub async fn receive(&mut self) -> Result<(T, SocketAddr)> {
+    pub async fn receive(&mut self) -> Result<(&[u8], SocketAddr)> {
         self.reset_frame(0);
         while self.chunk_buffers.len() < self.chunk_buffers.capacity() {
             let chunk = self.chunk_buffers.push_mut([0; _]);
@@ -217,9 +211,8 @@ impl<T: for<'a> Deserialize<'a>> ChunkedReceiver<T> {
             if self.message_ready() {
                 self.next_frame = self.next_frame.wrapping_add(1); // mark this frame as received
                 self.received_frames = self.received_frames.saturating_add(1);
-                return self.build_message().expect("Unable to build ready message")
-                    .map(|msg| (msg, addr))
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e));
+                self.build_message().expect("Unable to build ready message");
+                return Ok((self.assembly_buf.as_slice(), addr));
             }
         }
 
@@ -282,14 +275,13 @@ impl<T: for<'a> Deserialize<'a>> ChunkedReceiver<T> {
         })
     }
 
-    fn build_message(&mut self) -> Option<postcard::Result<T>> {
-        // start with a fresh deserialization buffer
-        self.serialization_scratch_buf.clear();
+    fn build_message(&mut self) -> Option<()> {
+        self.assembly_buf.clear();
 
         let mut received_chunks = 0;
         let all_received = Self::iter_chunks(&self.chunk_trackers, &self.chunk_buffers, |header, data| {
             received_chunks += 1;
-            self.serialization_scratch_buf.extend(data);
+            self.assembly_buf.extend(data);
 
             if header.continuation_flag {
                 ControlFlow::Continue(())
@@ -302,23 +294,19 @@ impl<T: for<'a> Deserialize<'a>> ChunkedReceiver<T> {
             return None;
         }
 
-        let msg = postcard::from_bytes(self.serialization_scratch_buf.as_slice());
-        if msg.is_ok() {
-            self.received_chunks = self.received_chunks.saturating_add(received_chunks);
-        }
-        Some(msg)
+        self.received_chunks = self.received_chunks.saturating_add(received_chunks);
+        Some(())
     }
 }
 
 #[derive(Debug)]
-pub struct ChunkedSender<T: Serialize> {
+pub struct ChunkedSender {
     next_identifier: u16,
     tx_buf: Vec<u8>,
     socket: Arc<UdpSocket>,
-    _phantom: PhantomData<T>,
 }
 
-impl<T: Serialize> ChunkedSender<T> {
+impl ChunkedSender {
     pub fn new(socket: Arc<UdpSocket>, max_serialization_size: usize) -> Self {
         let min_chunk_count = min_chunk_count_for_data(max_serialization_size);
         if min_chunk_count > MAX_CHUNK_COUNT {
@@ -329,29 +317,27 @@ impl<T: Serialize> ChunkedSender<T> {
             next_identifier: 0,
             tx_buf: vec![0; HEADER_SIZE + max_serialization_size],
             socket,
-            _phantom: Default::default(),
         }
     }
 
-    pub async fn update(&mut self, msg: &T) -> Result<()> {
+    pub fn serialization_buf(&mut self) -> &mut [u8] {
+        &mut self.tx_buf[HEADER_SIZE..]
+    }
+
+    pub async fn send(&mut self, payload_len: usize) -> Result<()> {
+        if payload_len > self.tx_buf.len() - HEADER_SIZE {
+            let desc = format!("Payload was larger than configured {} byte limit", self.tx_buf.len() - HEADER_SIZE);
+            return Err(io::Error::new(io::ErrorKind::OutOfMemory, desc));
+        }
+
         let identifier = self.next_identifier;
 
         // make sure we don't get cancelled without updating this
         self.next_identifier = self.next_identifier.wrapping_add(1);
 
-        let serialized = match postcard::to_slice(msg, &mut self.tx_buf[HEADER_SIZE..]) {
-            Ok(s) => s,
-            Err(postcard::Error::SerializeBufferFull) => {
-                let desc = format!("Serialized message was larger than configured {} limit", self.tx_buf.capacity());
-                return Err(io::Error::new(io::ErrorKind::OutOfMemory, desc))
-            },
-            Err(e) => panic!("Unexpected serialization error ({e})"),
-        };
-
-        let len = serialized.len();
-        let mut scratch_buf = &mut self.tx_buf[..len + HEADER_SIZE];
-        let mut chunk_number = 0;
-        while scratch_buf.len() > HEADER_SIZE {
+        let chunk_count = min_chunk_count_for_data(payload_len);
+        let mut scratch_buf = &mut self.tx_buf[..payload_len + HEADER_SIZE];
+        for chunk_number in 0..chunk_count {
             let (end, continuation_flag) = if scratch_buf.len() <= CHUNK_SIZE {
                 (scratch_buf.len(), false)
             } else {
@@ -359,38 +345,26 @@ impl<T: Serialize> ChunkedSender<T> {
             };
             let header = Header {
                 frame_identifier: identifier,
-                chunk_identifier: chunk_number,
+                chunk_identifier: chunk_number as u16,
                 continuation_flag,
             }.to_network_bytes();
-
             let (msg_header, _) = scratch_buf.split_first_chunk_mut()
                 .expect("Writing header into impossibly small message buffer");
             *msg_header = header;
 
             self.socket.send(&scratch_buf[..end]).await?;
-
             scratch_buf = &mut scratch_buf[(end - HEADER_SIZE)..];
-            chunk_number += 1;
         }
 
-        return Ok(())
-    }
-
-    pub fn serialization_buf(&mut self) -> &mut [u8] {
-        &mut self.tx_buf[HEADER_SIZE..]
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
-    use serde::{Deserialize, Serialize};
 
-    const TEST_TIMEOUT: Duration = Duration::from_secs(5);
-
-    async fn sender_receiver<T: Serialize + for<'a> Deserialize<'a>>() -> (ChunkedSender<T>, ChunkedReceiver<T>) {
+    async fn sender_receiver() -> (ChunkedSender, ChunkedReceiver) {
         const BUF_SIZE: usize = CHUNK_SIZE * 2;
 
         let receiver = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
@@ -405,55 +379,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_simple_message() {
+    async fn send_single_chunk() {
         let (mut sender, mut receiver) = sender_receiver().await;
-        sender.update(&true).await.unwrap();
-        assert!(receiver.receive().await.unwrap().0);
-    }
-
-    // #[tokio::test]
-    // async fn send_empty_message() {
-    //     tokio::time::timeout(TEST_TIMEOUT, async {
-    //         let (mut sender, mut receiver) = sender_receiver().await;
-    //         sender.update(&()).await.unwrap();
-    //         receiver.receive().await.unwrap();
-    //     }).await.unwrap()
-    // }
-
-    #[tokio::test]
-    async fn send_normal_message() {
-        #[derive(Deserialize, Serialize, Debug, PartialEq, Eq)]
-        struct NormalMessage {
-            first: u8,
-            second: u16,
-            third: String,
-        }
-
-        let data = NormalMessage {
-            first: 1,
-            second: 2,
-            third: "hello world".to_string(),
-        };
-        let (mut sender, mut receiver) = sender_receiver().await;
-        sender.update(&data).await.unwrap();
-        assert_eq!(receiver.receive().await.unwrap().0, data);
+        let payload = [1, 2, 3];
+        sender.serialization_buf()[..payload.len()].copy_from_slice(&payload);
+        sender.send(payload.len()).await.unwrap();
+        assert_eq!(receiver.receive().await.unwrap().0, payload);
     }
 
     #[tokio::test]
-    async fn send_full_message() {
-        // minus 2 bytes because the array length gets encoded
-        let data = vec![0; CHUNK_DATA_SIZE - 2];
+    async fn send_empty_payload() {
         let (mut sender, mut receiver) = sender_receiver().await;
-        sender.update(&data).await.unwrap();
+        sender.send(0).await.unwrap();
+        assert_eq!(receiver.receive().await.unwrap().0, Vec::<u8>::new());
+    }
+
+    #[tokio::test]
+    async fn send_full_chunk() {
+        let data = vec![0; CHUNK_DATA_SIZE];
+        let (mut sender, mut receiver) = sender_receiver().await;
+        sender.serialization_buf()[..data.len()].copy_from_slice(&data);
+        sender.send(data.len()).await.unwrap();
         assert_eq!(receiver.receive().await.unwrap().0, data);
     }
 
     /// Send a message that takes slightly more than one frame
     #[tokio::test]
-    async fn send_slightly_large_message() {
-        let data = vec![0; CHUNK_DATA_SIZE];
+    async fn send_slightly_large_payload() {
+        let data = vec![0; CHUNK_DATA_SIZE + 1];
         let (mut sender, mut receiver) = sender_receiver().await;
-        sender.update(&data).await.unwrap();
+        sender.serialization_buf()[..data.len()].copy_from_slice(&data);
+        sender.send(data.len()).await.unwrap();
         assert_eq!(receiver.receive().await.unwrap().0, data);
         assert_eq!(receiver.received_chunks(), 2);
     }

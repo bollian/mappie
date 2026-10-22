@@ -200,6 +200,6 @@ async fn reporter_task(args: Conf, mut status: StatusSender) -> Result<()> {
             Err(e) => return Err(e.into())
         };
         let reading = SensorReading { scan };
-        status.update(&StatusMessage::SensorReading(reading)).await?;
+        status.send(&StatusMessage::SensorReading(reading)).await?;
     }
 }
