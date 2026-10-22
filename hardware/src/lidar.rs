@@ -75,7 +75,7 @@ Serial Number: {serial_number:02x}");
         log::info!("LIDAR using typical scan mode {typical_scan_mode}");
 
         match rplidar.check_motor_ctrl_support() {
-            Ok(support) => if support == true {
+            Ok(support) => if support {
                 log::info!("Accessory board is detected and support motor control, starting motor...");
                 rplidar.set_motor_pwm(600)
                     .inspect_err(|e| log::error!("Failed to start LIDAR motor: {e}"))?;
@@ -90,7 +90,7 @@ Serial Number: {serial_number:02x}");
         let ScanMode { id, name, max_distance, ans_type: _, us_per_sample } = rplidar.start_scan()?;
         log::info!("LIDAR scanning using {name}({id}) mode: {max_distance}m max distance, {us_per_sample}µs per sample");
 
-        return Ok(Self { dev: rplidar })
+        Ok(Self { dev: rplidar })
     }
 
     pub fn grab_scan(&mut self) -> Result<Scan> {

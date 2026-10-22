@@ -38,9 +38,9 @@ impl Pwm {
         }));
 
         match settled {
-            Err(_) => return Err(HardwareError::Io(
+            Err(_) => Err(HardwareError::Io(
                 io::Error::new(ErrorKind::PermissionDenied, "Timed out waiting for udev reconfiguration"))),
-            Ok(Err(e)) => return Err(HardwareError::Pwm(e)),
+            Ok(Err(e)) => Err(HardwareError::Pwm(e)),
             Ok(Ok(())) => {
                 pwm.enable(true)?;
                 Ok(Self {
@@ -69,5 +69,5 @@ pub fn chip_channel_exists(chip: u32, channel: u32) -> bool {
         Err(_) => return false,
     };
     let count = chip.count().unwrap_or(0);
-    return count > channel
+    count > channel
 }

@@ -163,17 +163,14 @@ pub async fn listen_for_operator<A: Iterator<Item = SocketAddr>>(addrs: A) -> Re
             let socket = UdpSocket::bind(addr).await?;
             loop {
                 // listen for new connections
-                match ControlReceiver::receive_from(&socket).await {
-                    Ok((msg, addr)) if msg == ControlMessage::EstablishControl => {
-                        socket.connect(addr).await?;
-                        let socket = Arc::new(socket);
-                        let sender = StatusSender::new(Arc::clone(&socket), StatusMessage::SERIALIZATION_BUF_SIZE);
-                        let receiver = ControlReceiver {
-                            socket,
-                        };
-                        return Ok((sender, receiver))
-                    }
-                    _ => {}
+                if let Ok((ControlMessage::EstablishControl, addr)) = ControlReceiver::receive_from(&socket).await {
+                    socket.connect(addr).await?;
+                    let socket = Arc::new(socket);
+                    let sender = StatusSender::new(Arc::clone(&socket), StatusMessage::SERIALIZATION_BUF_SIZE);
+                    let receiver = ControlReceiver {
+                        socket,
+                    };
+                    return Ok((sender, receiver))
                 }
             }
         });
@@ -182,7 +179,7 @@ pub async fn listen_for_operator<A: Iterator<Item = SocketAddr>>(addrs: A) -> Re
     let res = join_set.join_next().await
         .expect("Listen address list was empty");
     match res {
-        Ok(res) => return res,
+        Ok(res) => res,
         Err(join_err) => std::panic::resume_unwind(join_err.into_panic()),
     }
 }

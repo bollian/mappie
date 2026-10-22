@@ -59,7 +59,7 @@ impl Config {
     pub fn load_file(path: &Path) -> &'static Self {
         GLOBAL_CONFIG.get_or_init(|| {
             log::info!("Attempting to load hardware config from '{}'", path.display());
-            match Self::load_inner(path.as_ref()) {
+            match Self::load_inner(path) {
                 Ok(c) => return c,
                 Err(e) => {
                     log::warn!("Failed to load hardware config '{}': {e}", path.display());
@@ -74,8 +74,8 @@ impl Config {
     fn load_inner(path: &Path) -> Result<Self> {
         let f = std::fs::OpenOptions::new().read(true).open(path)
             .wrap_err_with(|| format!("Failed to open file '{}'", path.display()))?;
-        Ok(serde_json::from_reader::<_, Config>(f)
-            .wrap_err_with(|| format!("Failed to deserialize JSON from '{}'", path.display()))?)
+        serde_json::from_reader::<_, Config>(f)
+            .wrap_err_with(|| format!("Failed to deserialize JSON from '{}'", path.display()))
     }
 }
 

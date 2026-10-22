@@ -91,7 +91,7 @@ impl UdevWaiter {
         // we're watching for the /run/udev/queue file to get deleted
         inotify.add_watch("/run/udev", WatchFlags::DELETE)?;
         Ok(Self {
-            inotify: inotify,
+            inotify,
         })
     }
 

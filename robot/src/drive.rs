@@ -111,5 +111,5 @@ fn mecanum_wheel_speeds(vx: f32, vy: f32, rot: f32) -> Speeds {
         br /= div;
     }
 
-    return Speeds { fl, bl, fr, br };
+    Speeds { fl, bl, fr, br }
 }

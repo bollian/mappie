@@ -51,6 +51,6 @@ impl LidarTest {
         }
         println!();
 
-        return Ok(())
+        Ok(())
     }
 }

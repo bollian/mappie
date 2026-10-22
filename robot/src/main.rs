@@ -90,7 +90,7 @@ fn main() -> Result<()> {
             }).await
     });
     match res {
-        Err(e) => return Err(e)
+        Err(e) => Err(e)
     }
 }
 
@@ -132,11 +132,11 @@ async fn main_loop(
             if let Err(e) = report_res {
                 final_res = Err(e.wrap_err("Report task exited with error"));
             }
-            return final_res;
+            final_res
         }
         Err(e) => {
             log::error!("Failed to join control or report tasks: {e:?}");
-            return Err(e.into())
+            Err(e.into())
         }
     }
 }

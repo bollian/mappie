@@ -216,7 +216,7 @@ impl ChunkedReceiver {
             }
         }
 
-        return Err(io::Error::new(io::ErrorKind::OutOfMemory, "Received data frame was too large"));
+        Err(io::Error::new(io::ErrorKind::OutOfMemory, "Received data frame was too large"))
     }
 
     fn reset_frame(&mut self, saved_chunks: usize) {
@@ -264,7 +264,7 @@ impl ChunkedReceiver {
             } else { break }
         }
 
-        return !continuation_flag
+        !continuation_flag
     }
 
     fn message_ready(&self) -> bool {
