@@ -1,0 +1,47 @@
+name: Build and Test
+on: [push]
+
+jobs:
+  ci:
+    name: Test
+    needs: [test-operator, test-robot]
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Starting CI
+        run: echo Finished
+    permissions:
+      contents: none
+
+  test-operator:
+    name: Test operator
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Install system dependencies
+        run: sudo apt-get --assume-yes install libudev-dev libfontconfig-dev
+      - name: Install rust
+        run: rustup update --no-self-update
+      - name: Build
+        run: cargo build
+      - name: Test
+        run: cargo test
+
+  test-robot:
+    name: Test robot
+    runs-on: ubuntu-26.04-arm
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Install system dependencies
+        run: sudo apt-get --assume-yes install libudev-dev libfontconfig-dev
+      - name: Install rust
+        run: rustup update --no-self-update
+      - name: Build
+        run: cargo build
+      - name: Test
+        run: cargo test
