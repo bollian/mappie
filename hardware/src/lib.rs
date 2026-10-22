@@ -1,6 +1,4 @@
 pub mod hiwonder_motor_board;
-#[cfg(target_arch = "aarch64")]
-pub mod l298n_motor;
 pub mod lidar;
 pub mod pwm;
 
@@ -17,18 +15,10 @@ use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
 use tokio::time::Instant;
 
-#[cfg(target_arch = "aarch64")]
-pub use l298n_motor as motor;
-#[cfg(target_arch = "aarch64")]
-pub use rppal::gpio as gpio;
-
 pub type Result<T> = std::result::Result<T, HardwareError>;
 
 #[derive(Error, Debug)]
 pub enum HardwareError {
-    #[cfg(target_arch = "aarch64")]
-    #[error("GPIO error: {0}")]
-    Gpio(#[from] rppal::gpio::Error),
     #[error("PWM error: {0}")]
     Pwm(#[from] sysfs_pwm::Error),
     #[error("OS error: {0}")]

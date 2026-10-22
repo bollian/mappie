@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-adafruit_motorkit.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 embedded-hal.workspace = true
@@ -14,8 +13,6 @@ hardware.workspace = true
 hiwonder-encoder-motor-module.workspace = true
 linux-embedded-hal.workspace = true
 log.workspace = true
-pwm-pca9685.workspace = true
-rppal.workspace = true
 rustix = { workspace = true, features = ["event", "stdio", "thread"] }
 rplidar_drv_rs = "0.7.0"
 scopeguard.workspace = true

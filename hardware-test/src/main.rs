@@ -1,19 +1,16 @@
 mod i2c_motors;
 mod lidar;
-mod motors;
 mod pwm;
 
 use std::io::Read;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use hardware::gpio::Gpio;
 use rustix::event::{PollFd, PollFlags, poll};
 use rustix::time::Timespec;
 
 use i2c_motors::*;
 use lidar::*;
-use motors::*;
 use pwm::*;
 
 #[derive(Parser)]
@@ -33,7 +30,6 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
-    Motors(MotorsArgs),
     Lidar(LidarArgs),
     Pwm(PwmArgs),
     I2cMotors(I2cMotorsArgs),
@@ -43,15 +39,10 @@ fn main() -> Result<()> {
     env_logger::init();
 
     let args = Args::parse();
-    let mut motors = None;
     let mut lidar = None;
     let mut pwm = None;
     let mut i2c_motors = None;
     match args.subcommand {
-        Command::Motors(args) => {
-            motors = Some(MotorsTest::new(args)
-                .context("Failed to initialize motors test")?);
-        }
         Command::Lidar(args) => {
             lidar = Some(LidarTest::new(args)
                 .context("Failed to initialize lidar test")?);
@@ -66,15 +57,6 @@ fn main() -> Result<()> {
         }
     }
 
-    let _gpio = if args.skip_gpio {
-        None
-    } else {
-        Some(Gpio::new().context("Failed to initialize GPIO")?)
-    };
-
-    if let Some(motors) = &mut motors {
-        motors.start();
-    }
     if let Some(pwm) = &mut pwm {
         pwm.start()
             .context("Failed to start PWM test")?;
