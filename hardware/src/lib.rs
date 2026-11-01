@@ -42,7 +42,11 @@ impl AsyncInotify {
     fn new() -> io::Result<Self> {
         let inotify_fd = inotify::init(inotify::CreateFlags::NONBLOCK)?;
         Ok(Self {
-            inotify: AsyncFd::with_interest(inotify_fd, Interest::READABLE)?,
+            // SAFETY: `inotify_fd` owns a valid descriptor and is moved into `AsyncFd`,
+            // which keeps it open and unchanged for the registered lifetime.
+            inotify: unsafe {
+                AsyncFd::register_with_interest(inotify_fd, Interest::READABLE)
+            }?,
             buf: Box::new([MaybeUninit::uninit(); _]),
         })
     }

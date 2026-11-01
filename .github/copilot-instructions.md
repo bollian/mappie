@@ -9,3 +9,7 @@ changes, run local tests with `just ltest`.
 # Etiquette
 
 Do not create commits.
+
+# Code Quality
+
+Double check with the developer before using `unsafe` code. Always document safety invariants.
