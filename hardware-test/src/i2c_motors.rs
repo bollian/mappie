@@ -15,14 +15,14 @@ pub struct I2cMotorsArgs {
     dev: OsString,
 
     /// List of motor ports to drive
-    #[arg(long, short, default_values_t = [0, 1, 2, 3])]
+    #[arg(long, short, value_delimiter = ',', default_values_t = [0, 1, 2, 3])]
     motors: Vec<u8>,
 
     /// Speed to set the motors to
     ///
     /// The value provided will be clamped to the range [-1.0, 1.0], and negative values run the
     /// motors in reverse.
-    #[arg(long, short, default_value_t = 0.0)]
+    #[arg(long, short, allow_negative_numbers = true, default_value_t = 0.0)]
     speed: f32,
 }
 
