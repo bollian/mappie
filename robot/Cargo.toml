@@ -1,7 +1,8 @@
 [package]
 name = "robot"
-version = "0.1.0"
 edition = "2024"
+authors.workspace = true
+version.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -18,7 +19,6 @@ linux-embedded-hal.workspace = true
 log.workspace = true
 messages.workspace = true
 mint.workspace = true
-nalgebra.workspace = true
 postcard.workspace = true
 serde.workspace = true
 serde_json.workspace = true

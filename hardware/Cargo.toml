@@ -1,6 +1,7 @@
 [package]
 name = "hardware"
 description = "Shared robot hardware abstractions"
+authors.workspace = true
 version.workspace = true
 edition.workspace = true
 

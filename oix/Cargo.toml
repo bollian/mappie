@@ -1,6 +1,7 @@
 [package]
 name = "oix"
 description = "Operator interface for driving the robot"
+authors.workspace = true
 version.workspace = true
 edition.workspace = true
 

@@ -1,20 +1,19 @@
 [package]
 name = "hardware-test"
-version = "0.1.0"
 edition = "2024"
+authors.workspace = true
+version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
 embedded-hal.workspace = true
 env_logger.workspace = true
-eyre.workspace = true
 hardware.workspace = true
 hiwonder-encoder-motor-module.workspace = true
 linux-embedded-hal.workspace = true
 log.workspace = true
 rustix = { workspace = true, features = ["event", "stdio", "thread"] }
-rplidar_drv_rs = "0.7.0"
 scopeguard.workspace = true
 serialport.workspace = true
 sysfs-pwm.workspace = true
