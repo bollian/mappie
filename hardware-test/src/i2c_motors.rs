@@ -2,7 +2,15 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::time::Duration;
 use anyhow::{Context, Result};
-use hiwonder_encoder_motor_module::{MotorType, set_pwms, set_closed_loop_speeds, set_motors_type, encoder_totals};
+use hiwonder_encoder_motor_module::{
+    EncoderPolarity,
+    MotorType,
+    set_pwms,
+    set_closed_loop_speeds,
+    set_motors_type,
+    encoder_totals,
+    set_encoder_polarity
+};
 use hardware::hiwonder_motor_board::init_motors;
 use linux_embedded_hal::I2cdev;
 
@@ -12,7 +20,7 @@ use clap::Parser;
 #[derive(Parser, Clone, Debug)]
 pub struct I2cMotorsArgs {
     /// Path to the device file for the I2C bus with the motor controller board
-    #[arg(long, short, default_value_os_t = OsString::from("/dev/i2c-1"))]
+    #[arg(long, short, default_value_os_t = OsString::from("/dev/i2c-0"))]
     dev: OsString,
 
     /// List of motor ports to drive
@@ -29,6 +37,10 @@ pub struct I2cMotorsArgs {
     /// Use 12V encoder motors
     #[arg(long = "12v", default_value_t = false)]
     v12: bool,
+
+    /// Flip encoder direction
+    #[arg(long, default_value_t = false)]
+    flip_encoders: bool,
 
     /// Speed in encoder clicks per 10ms. Negative values run the motor in reverse.
     #[arg(long, short, allow_negative_numbers = true)]
@@ -51,8 +63,14 @@ impl I2cMotorsTest {
             MotorType::JGB37
         } else { MotorType::NoEncoder };
 
-        let i2c = init_motors(Path::new(args.dev.as_os_str()), ty)
+        let mut i2c = init_motors(Path::new(args.dev.as_os_str()), ty)
             .with_context(|| format!("Failed to open I2c device \"{}\"", args.dev.display()))?;
+
+        let polarity = if ty != MotorType::NoEncoder {
+            EncoderPolarity::Reverse
+        } else { EncoderPolarity::Forward };
+        set_encoder_polarity(&mut i2c, polarity)?;
+
         Ok(Self {
             args,
             i2c,

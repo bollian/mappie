@@ -79,30 +79,36 @@ fn main() -> Result<()> {
     }
 
     let period = Duration::from_millis(args.period_ms.get().into());
-    let poll_timeout = Timespec {
-        tv_sec: period.as_secs() as i64,
-        tv_nsec: i64::from(period.subsec_nanos()),
-    };
     let mut stdin = std::io::stdin();
     let mut stdin_buf = [0; 256];
     let mut previous_periodic = Instant::now();
+    let mut next_start = previous_periodic + period;
     loop {
-        if args.no_prompt {
-            std::thread::sleep(period);
-        } else {
-            let poll_count = poll(&mut [PollFd::new(&stdin, PollFlags::IN)], Some(&poll_timeout))
-                .context("Stdin poll operation failed")?;
+        let remaining = next_start.saturating_duration_since(Instant::now());
+        if !remaining.is_zero() {
+            std::thread::sleep(remaining);
+        }
+
+        if !args.no_prompt {
+            let poll_timeout = Timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            let poll_count = poll(
+                &mut [PollFd::new(&stdin, PollFlags::IN)],
+                Some(&poll_timeout),
+            )
+            .context("Stdin poll operation failed")?;
             if poll_count == 1 {
-                // check for if the user pressed Enter
                 let count = stdin.read(&mut stdin_buf[..])?;
-                if stdin_buf[..count].contains(&b'\n') {
-                    break
+                if count == 0 || stdin_buf[..count].contains(&b'\n') {
+                    break;
                 }
-                // clear the buffer because we don't care about anything aside from newlines
                 stdin_buf[..count].fill(0);
             }
         }
 
+        let scheduled_start = next_start;
         let now = Instant::now();
         let delta_time = now.duration_since(previous_periodic);
         previous_periodic = now;
@@ -116,7 +122,70 @@ fn main() -> Result<()> {
         if let Some(i2c_motors_test) = &mut i2c_motors {
             i2c_motors_test.periodic(delta_time)?;
         }
+
+        next_start = next_iteration_start(scheduled_start, period);
     }
 
     anyhow::Result::<()>::Ok(())
+}
+
+fn next_iteration_start(scheduled_start: Instant, period: Duration) -> Instant {
+    scheduled_start + period
+}
+
+#[cfg(test)]
+mod tests {
+    use super::next_iteration_start;
+    use std::time::{Duration, Instant};
+
+    const PERIOD: Duration = Duration::from_millis(20);
+
+    #[test]
+    fn advances_deadline_by_one_period() {
+        let scheduled_start = Instant::now();
+
+        assert_eq!(
+            next_iteration_start(scheduled_start, PERIOD),
+            scheduled_start + PERIOD,
+        );
+    }
+
+    #[test]
+    fn overrun_does_not_rebase_the_deadline() {
+        let scheduled_start = Instant::now();
+        let completed_at = scheduled_start + Duration::from_millis(24);
+
+        let next_start = next_iteration_start(scheduled_start, PERIOD);
+        assert_eq!(next_start, scheduled_start + PERIOD);
+        assert!(next_start < completed_at);
+        assert_eq!(
+            next_iteration_start(next_start, PERIOD),
+            scheduled_start + PERIOD + PERIOD,
+        );
+    }
+
+    #[test]
+    fn exact_deadline_does_not_add_a_delay() {
+        let scheduled_start = Instant::now();
+        let deadline = scheduled_start + PERIOD;
+
+        assert_eq!(
+            next_iteration_start(scheduled_start, PERIOD),
+            deadline,
+        );
+    }
+
+    #[test]
+    fn deadlines_keep_advancing_from_the_schedule_after_long_overrun() {
+        let scheduled_start = Instant::now();
+        let completed_at = scheduled_start + Duration::from_millis(65);
+        let next_start = next_iteration_start(scheduled_start, PERIOD);
+
+        assert_eq!(next_start, scheduled_start + PERIOD);
+        assert!(next_start < completed_at);
+        assert_eq!(
+            next_iteration_start(next_start, PERIOD),
+            scheduled_start + PERIOD + PERIOD,
+        );
+    }
 }
