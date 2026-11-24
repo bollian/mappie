@@ -95,8 +95,9 @@ impl StatusMessage {
     ///
     /// We can get at most 1450 lidar points from a single scan, and each point should serialize to
     /// no more than 10 bytes (8 bytes of actual data, plus 2 bytes for the varint overhead of the
-    /// larger fields). An additional 5 bytes is set aside for the 32-bit discard count.
-    pub const SERIALIZATION_BUF_SIZE: usize = 1450 * 10 + 5;
+    /// larger fields). An additional 5 bytes is set aside for the 32-bit discard count, and 4 for
+    /// the voltage.
+    pub const SERIALIZATION_BUF_SIZE: usize = 1450 * 10 + 5 + 4;
 }
 
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq)]
@@ -123,6 +124,8 @@ impl Move {
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 pub struct SensorReading {
     pub scan: hardware::lidar::Scan,
+    /// Power voltage of the robot's motor controller, in volts.
+    pub voltage: f32,
 }
 
 /// A channel for sending control messages to the robot

@@ -92,11 +92,11 @@ impl AppData {
                         Ok(sensor_reading) => match &mut app.state {
                             AppState::Connecting => {
                                 let mut lidar_view = LidarView::new();
-                                lidar_view.give_data(sensor_reading.scan);
+                                lidar_view.give_data(sensor_reading.scan, Some(sensor_reading.voltage));
                                 app.state = AppState::Driving(lidar_view);
                             },
                             AppState::Driving(lidar_view) => {
-                                lidar_view.give_data(sensor_reading.scan);
+                                lidar_view.give_data(sensor_reading.scan, Some(sensor_reading.voltage));
                             }
                             _ => unreachable!(),
                         },
@@ -114,7 +114,7 @@ impl AppData {
                 |app: &mut Self, lidar_scan| {
                     if let AppState::LocalLidar(lidar_view) = &mut app.state {
                         match lidar_scan {
-                            Ok(scan) => lidar_view.give_data(scan),
+                            Ok(scan) => lidar_view.give_data(scan, None),
                             Err(banner) => {
                                 app.banner = Some(banner);
                                 // TODO: fix the spurious timeout errors from the lidar

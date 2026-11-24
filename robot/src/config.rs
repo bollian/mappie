@@ -36,6 +36,14 @@ pub struct Config {
     /// forward movement.
     #[serde(default = "default_forward_max_speed")]
     pub br_max: f32,
+
+    /// Indicate that positive motor speeds produce negative clicks from the encoders
+    pub flip_encoders: bool,
+
+    /// Maximum encoder number of encoder clicks that can be expected in 10ms
+    ///
+    /// This is used to calibrate the maximum speed of encoder motors
+    pub max_clicks_per_10ms: f32,
 }
 
 impl Default for Config {
@@ -45,6 +53,8 @@ impl Default for Config {
             bl_max: default_forward_max_speed(),
             fr_max: default_forward_max_speed(),
             br_max: default_forward_max_speed(),
+            flip_encoders: false,
+            max_clicks_per_10ms: 0.0,
         }
     }
 }
@@ -81,3 +91,16 @@ impl Config {
 
 #[inline(always)]
 const fn default_forward_max_speed() -> f32 { 1.0 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deserializes_hardware_config() {
+        let config: Config =
+            serde_json::from_str(include_str!("../../hardware-config.json")).unwrap();
+
+        let _ = config;
+    }
+}

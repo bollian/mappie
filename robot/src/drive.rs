@@ -1,6 +1,13 @@
 use embedded_hal::i2c::ErrorType;
 use hardware::hiwonder_motor_board::*;
-use hiwonder_encoder_motor_module::{MotorType, set_pwms};
+use hiwonder_encoder_motor_module::{
+    EncoderPolarity,
+    MotorType,
+    power_millivolts,
+    set_pwms,
+    set_closed_loop_speeds,
+    set_encoder_polarity
+};
 use linux_embedded_hal::I2cdev;
 use messages::Move;
 
@@ -16,7 +23,21 @@ impl Drive {
     ///
     /// Provide the I2c bus used for communicating with the HiWonder motor driver board.
     pub fn new(conf: crate::Conf) -> Result<Self, <I2cdev as ErrorType>::Error> {
-        let i2c = init_motors(conf.i2c_dev_path.as_path(), MotorType::NoEncoder)?;
+        let global_conf = Config::get_global();
+
+        let ty = if global_conf.max_clicks_per_10ms == 0.0 {
+            MotorType::NoEncoder
+        } else { MotorType::JGB37 };
+        log::info!("Setting drive motor type to {ty:?}");
+
+        let mut i2c = init_motors(conf.i2c_dev_path.as_path(), ty)?;
+
+        let polarity = if global_conf.flip_encoders {
+            log::info!("Inverting drive encoder polarity");
+            EncoderPolarity::Reverse
+        } else { EncoderPolarity::Forward };
+        set_encoder_polarity(&mut i2c, polarity)?;
+
         Ok(Self {
             conf,
             i2c,
@@ -46,23 +67,40 @@ impl Drive {
         }
     }
 
+    pub fn power_voltage(&mut self) -> Result<f32, <I2cdev as ErrorType>::Error> {
+        power_millivolts(&mut self.i2c).map(|millivolts| f32::from(millivolts) / 1000.0)
+    }
+
     /// Set the speeds of the wheels in the range [-1.0, 1.0], with negatives spinning backwards
     ///
     /// You don't need to pass in negative values to account for motor orientation. That is handled
     /// internally by looking at the hardware configuration.
     fn set_speeds(&mut self, speeds: Speeds) -> Result<(), <I2cdev as ErrorType>::Error> {
         let conf = Config::get_global();
-        let mut pwms = [0; 4];
 
-        pwms[FRONT_LEFT_MOTOR_PORT as usize] = (speeds.fl * conf.fl_max * 100.0) as i8;
-        pwms[BACK_LEFT_MOTOR_PORT as usize] = (speeds.bl * conf.bl_max * 100.0) as i8;
-        pwms[FRONT_RIGHT_MOTOR_PORT as usize] = (speeds.fr * conf.fr_max * 100.0) as i8;
-        pwms[BACK_RIGHT_MOTOR_PORT as usize] = (speeds.br * conf.br_max * 100.0) as i8;
-        for pwm in pwms.iter_mut() {
-            *pwm = (*pwm).clamp(-100, 100);
+        if conf.max_clicks_per_10ms == 0.0 {
+            let mut pwms = [0; 4];
+
+            pwms[FRONT_LEFT_MOTOR_PORT as usize] = (speeds.fl * conf.fl_max * 100.0) as i8;
+            pwms[BACK_LEFT_MOTOR_PORT as usize] = (speeds.bl * conf.bl_max * 100.0) as i8;
+            pwms[FRONT_RIGHT_MOTOR_PORT as usize] = (speeds.fr * conf.fr_max * 100.0) as i8;
+            pwms[BACK_RIGHT_MOTOR_PORT as usize] = (speeds.br * conf.br_max * 100.0) as i8;
+            for pwm in pwms.iter_mut() {
+                *pwm = (*pwm).clamp(-100, 100);
+            }
+
+            log::debug!("Setting wheel speeds {pwms:?}");
+            set_pwms(&mut self.i2c, pwms)
+        } else {
+            let mut clicks = [0; 4];
+            clicks[FRONT_LEFT_MOTOR_PORT as usize] = (speeds.fl * conf.max_clicks_per_10ms) as i8;
+            clicks[BACK_LEFT_MOTOR_PORT as usize] = (speeds.bl * conf.max_clicks_per_10ms) as i8;
+            clicks[FRONT_RIGHT_MOTOR_PORT as usize] = (speeds.fr * conf.max_clicks_per_10ms) as i8;
+            clicks[BACK_RIGHT_MOTOR_PORT as usize] = (speeds.br * conf.max_clicks_per_10ms) as i8;
+
+            log::debug!("Setting wheel clicks per 10ms {clicks:?}");
+            set_closed_loop_speeds(&mut self.i2c, clicks)
         }
-        log::debug!("Setting wheel speeds {pwms:?}");
-        set_pwms(&mut self.i2c, pwms)
     }
 
     pub fn stop(&mut self) -> Result<(), <I2cdev as ErrorType>::Error> {

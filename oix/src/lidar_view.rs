@@ -21,6 +21,7 @@ pub struct LidarView {
     robot_box: Size,
 
     raw_data: Scan,
+    voltage: Option<f32>,
 }
 
 impl LidarView {
@@ -45,11 +46,13 @@ impl LidarView {
                 discarded_count: 0,
                 points,
             },
+            voltage: None,
         }
     }
 
-    pub fn give_data(&mut self, scan: Scan) {
+    pub fn give_data(&mut self, scan: Scan, voltage: Option<f32>) {
         self.raw_data = scan;
+        self.voltage = voltage;
     }
 
     pub fn display(&mut self) -> impl WidgetView<Self> + use<> {
@@ -58,9 +61,14 @@ impl LidarView {
             text_button("-", |lidar: &mut Self| lidar.min_viewport_distance -= 1.0),
             text_button("+", |lidar: &mut Self| lidar.min_viewport_distance += 1.0),
         )).cross_axis_alignment(CrossAxisAlignment::Start);
-        let debug_info = label(format!("{} Points\n{} Discarded",
-                self.raw_data.points.len(),
-                self.raw_data.discarded_count))
+        let debug_text = format!("{} Points\n{} Discarded",
+            self.raw_data.points.len(),
+            self.raw_data.discarded_count);
+        let debug_text = match self.voltage {
+            Some(voltage) => format!("{debug_text}\nVoltage: {voltage:.3} V"),
+            None => debug_text,
+        };
+        let debug_info = label(debug_text)
             .color(palette::css::WHITE);
         let overlay_ui = flex_row((
             radius_control,

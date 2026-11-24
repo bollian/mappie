@@ -2,8 +2,10 @@ mod config;
 mod drive;
 
 use std::convert::Infallible;
-use std::path::PathBuf;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Parser;
@@ -40,7 +42,7 @@ struct Conf {
     wheelbase_length: f32,
 
     /// Path to the I2C bus device to find the motor controller board on
-    #[arg(short = 'i', long = "i2c", default_value = "/dev/i2c-1")]
+    #[arg(short = 'i', long = "i2c", default_value = "/dev/i2c-0")]
     i2c_dev_path: PathBuf,
 
     /// Path to the LIDAR device
@@ -117,9 +119,20 @@ async fn main_loop(
     status: StatusSender,
     controller: ControlReceiver,
 ) -> Result<()> {
+    let mut drive = drive::Drive::new(args.clone())
+        .wrap_err("Failed to initialize drive system")?;
+    let shared_sensor_data = Arc::new(SharedSensorData::new(
+        drive.power_voltage()
+            .wrap_err("Failed to read motor controller voltage")?,
+    ));
     // follow the configured minimum update rate, even when a message isn't received
-    let control_task = tokio::spawn(controller_task(args.clone(), controller));
-    let report_task = tokio::spawn(reporter_task(args.clone(), status));
+    let control_task = tokio::spawn(controller_task(
+        args.clone(),
+        controller,
+        drive,
+        Arc::clone(&shared_sensor_data),
+    ));
+    let report_task = tokio::spawn(reporter_task(args.clone(), status, shared_sensor_data));
     let result: Result<(Result<()>, Result<()>), _> = tokio::try_join!(
         control_task, report_task
     );
@@ -141,10 +154,12 @@ async fn main_loop(
     }
 }
 
-async fn controller_task(args: Conf, controller: ControlReceiver) -> Result<()> {
-    let mut drive = drive::Drive::new(args.clone())
-        .wrap_err("Failed to initialize drive system")?;
-
+async fn controller_task(
+    args: Conf,
+    controller: ControlReceiver,
+    mut drive: drive::Drive,
+    shared_sensor_data: Arc<SharedSensorData>,
+) -> Result<()> {
     log::debug!("Starting main loop");
     let timeout_duration = Duration::from_secs_f32(args.timeout);
     let mut ctrl_msg;
@@ -176,10 +191,18 @@ async fn controller_task(args: Conf, controller: ControlReceiver) -> Result<()> 
                 log::debug!("Unexpected handshake message from controller. Ignoring");
             }
         }
+
+        let voltage = drive.power_voltage()
+            .wrap_err("Failed to read motor controller voltage")?;
+        shared_sensor_data.update_voltage(voltage);
     }
 }
 
-async fn reporter_task(args: Conf, mut status: StatusSender) -> Result<()> {
+async fn reporter_task(
+    args: Conf,
+    mut status: StatusSender,
+    shared_sensor_data: Arc<SharedSensorData>,
+) -> Result<()> {
     let mut lidar = Lidar::new(args.lidar_dev_path.as_str())
         .wrap_err("Failed to open LIDAR device")?;
 
@@ -199,7 +222,28 @@ async fn reporter_task(args: Conf, mut status: StatusSender) -> Result<()> {
             },
             Err(e) => return Err(e.into())
         };
-        let reading = SensorReading { scan };
+        let voltage = shared_sensor_data.voltage();
+        let reading = SensorReading { scan, voltage };
         status.send(&StatusMessage::SensorReading(reading)).await?;
+    }
+}
+
+struct SharedSensorData {
+    voltage_bits: AtomicU32,
+}
+
+impl SharedSensorData {
+    fn new(voltage: f32) -> Self {
+        Self {
+            voltage_bits: AtomicU32::new(voltage.to_bits()),
+        }
+    }
+
+    fn update_voltage(&self, voltage: f32) {
+        self.voltage_bits.store(voltage.to_bits(), Ordering::Relaxed);
+    }
+
+    fn voltage(&self) -> f32 {
+        f32::from_bits(self.voltage_bits.load(Ordering::Relaxed))
     }
 }
